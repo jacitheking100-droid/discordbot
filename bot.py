@@ -164,13 +164,18 @@ def is_staff(member):
 # =========================
 
 def create_suggestion(user_id, content):
+
     cursor.execute(
         """
         INSERT INTO suggestions
         (user_id, content, message_id, channel_id, created_at)
         VALUES (?, ?, NULL, NULL, ?)
         """,
-        (user_id, content, int(time.time()))
+        (
+            user_id,
+            content,
+            int(time.time())
+        )
     )
 
     db.commit()
@@ -178,20 +183,30 @@ def create_suggestion(user_id, content):
     return cursor.lastrowid
 
 
-def set_suggestion_message(suggestion_id, message_id, channel_id):
+def set_suggestion_message(
+    suggestion_id,
+    message_id,
+    channel_id
+):
+
     cursor.execute(
         """
         UPDATE suggestions
         SET message_id = ?, channel_id = ?
         WHERE id = ?
         """,
-        (message_id, channel_id, suggestion_id)
+        (
+            message_id,
+            channel_id,
+            suggestion_id
+        )
     )
 
     db.commit()
 
 
 def get_suggestion(suggestion_id):
+
     cursor.execute(
         """
         SELECT id, user_id, content, message_id, channel_id
@@ -205,6 +220,7 @@ def get_suggestion(suggestion_id):
 
 
 def get_vote_counts(suggestion_id):
+
     cursor.execute(
         """
         SELECT
@@ -224,14 +240,21 @@ def get_vote_counts(suggestion_id):
     return likes, dislikes
 
 
-def get_user_vote(suggestion_id, user_id):
+def get_user_vote(
+    suggestion_id,
+    user_id
+):
+
     cursor.execute(
         """
         SELECT vote
         FROM suggestion_votes
         WHERE suggestion_id = ? AND user_id = ?
         """,
-        (suggestion_id, user_id)
+        (
+            suggestion_id,
+            user_id
+        )
     )
 
     result = cursor.fetchone()
@@ -239,13 +262,18 @@ def get_user_vote(suggestion_id, user_id):
     return result[0] if result else None
 
 
-def set_vote(suggestion_id, user_id, vote):
+def set_vote(
+    suggestion_id,
+    user_id,
+    vote
+):
+
     current_vote = get_user_vote(
         suggestion_id,
         user_id
     )
 
-    # אם לחץ שוב על אותו כפתור - מבטל את ההצבעה
+    # לחיצה נוספת על אותו כפתור מבטלת את ההצבעה
     if current_vote == vote:
 
         cursor.execute(
@@ -253,7 +281,10 @@ def set_vote(suggestion_id, user_id, vote):
             DELETE FROM suggestion_votes
             WHERE suggestion_id = ? AND user_id = ?
             """,
-            (suggestion_id, user_id)
+            (
+                suggestion_id,
+                user_id
+            )
         )
 
     else:
@@ -266,7 +297,11 @@ def set_vote(suggestion_id, user_id, vote):
             ON CONFLICT(suggestion_id, user_id)
             DO UPDATE SET vote = excluded.vote
             """,
-            (suggestion_id, user_id, vote)
+            (
+                suggestion_id,
+                user_id,
+                vote
+            )
         )
 
     db.commit()
@@ -288,15 +323,24 @@ async def build_suggestion_embed(
     if not suggestion:
         return None
 
-    _, user_id, content, _, _ = suggestion
+    (
+        _,
+        user_id,
+        content,
+        _,
+        _
+    ) = suggestion
 
     member = guild.get_member(user_id)
 
     if member:
+
         author_name = member.display_name
         author_mention = member.mention
         avatar_url = member.display_avatar.url
+
     else:
+
         author_name = "משתמש"
         author_mention = f"<@{user_id}>"
         avatar_url = None
@@ -313,7 +357,10 @@ async def build_suggestion_embed(
 
     embed.add_field(
         name="👤 הוצע על ידי",
-        value=f"{author_mention}\n`{author_name}`",
+        value=(
+            f"{author_mention}\n"
+            f"`{author_name}`"
+        ),
         inline=False
     )
 
@@ -331,6 +378,7 @@ async def build_suggestion_embed(
     )
 
     if avatar_url:
+
         embed.set_thumbnail(
             url=avatar_url
         )
@@ -342,10 +390,18 @@ async def build_suggestion_embed(
 # SUGGESTION VOTE VIEW
 # =========================
 
-class SuggestionVoteView(discord.ui.View):
+class SuggestionVoteView(
+    discord.ui.View
+):
 
-    def __init__(self, suggestion_id):
-        super().__init__(timeout=None)
+    def __init__(
+        self,
+        suggestion_id
+    ):
+
+        super().__init__(
+            timeout=None
+        )
 
         self.suggestion_id = suggestion_id
 
@@ -442,9 +498,12 @@ class SuggestionVoteView(discord.ui.View):
 # SUGGESTION MODAL
 # =========================
 
-class SuggestionModal(discord.ui.Modal):
+class SuggestionModal(
+    discord.ui.Modal
+):
 
     def __init__(self):
+
         super().__init__(
             title="💡 הצעה לשרת"
         )
@@ -516,10 +575,15 @@ class SuggestionModal(discord.ui.Modal):
 # SUGGESTION PANEL
 # =========================
 
-class SuggestionPanelView(discord.ui.View):
+class SuggestionPanelView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="הצעה לשרת",
@@ -542,10 +606,15 @@ class SuggestionPanelView(discord.ui.View):
 # TICKET VIEWS
 # =========================
 
-class TicketView(discord.ui.View):
+class TicketView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="פתיחת טיקט",
@@ -566,10 +635,15 @@ class TicketView(discord.ui.View):
         )
 
 
-class TicketTypeView(discord.ui.View):
+class TicketTypeView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=60)
+
+        super().__init__(
+            timeout=60
+        )
 
     @discord.ui.select(
         placeholder="בחר סוג פנייה...",
@@ -703,10 +777,15 @@ class TicketTypeView(discord.ui.View):
         )
 
 
-class TicketControlView(discord.ui.View):
+class TicketControlView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="לקחת טיפול",
@@ -738,7 +817,6 @@ class TicketControlView(discord.ui.View):
         await interaction.followup.send(
             f"👤 **{interaction.user.mention} לקח טיפול בטיקט הזה.**"
         )
-
 
     @discord.ui.button(
         label="סגירת טיקט",
@@ -781,9 +859,13 @@ class TicketControlView(discord.ui.View):
     name="xp",
     description="בדיקת כמות ה-XP שלך"
 )
-async def xp_command(interaction: discord.Interaction):
+async def xp_command(
+    interaction: discord.Interaction
+):
 
-    xp = get_xp(interaction.user.id)
+    xp = get_xp(
+        interaction.user.id
+    )
 
     embed = discord.Embed(
         title="📊 ה-XP שלך",
@@ -801,9 +883,13 @@ async def xp_command(interaction: discord.Interaction):
     name="warnings",
     description="בדיקת מספר האזהרות שלך"
 )
-async def warnings_command(interaction: discord.Interaction):
+async def warnings_command(
+    interaction: discord.Interaction
+):
 
-    warnings = get_warnings(interaction.user.id)
+    warnings = get_warnings(
+        interaction.user.id
+    )
 
     embed = discord.Embed(
         title="⚠️ האזהרות שלך",
@@ -840,7 +926,9 @@ async def warn_command(
 
         return
 
-    warnings = add_warning(member.id)
+    warnings = add_warning(
+        member.id
+    )
 
     embed = discord.Embed(
         title="⚠️ אזהרה ניתנה",
@@ -970,7 +1058,7 @@ async def suggestions_command(
 
 
 # =========================
-# XP + LINK SYSTEM
+# XP + ANTI LINK SYSTEM
 # =========================
 
 @bot.event
@@ -982,6 +1070,7 @@ async def on_message(message):
     user_id = message.author.id
     now = time.time()
 
+    # XP
     if (
         user_id not in last_xp
         or now - last_xp[user_id] >= XP_COOLDOWN
@@ -994,12 +1083,20 @@ async def on_message(message):
 
         last_xp[user_id] = now
 
+    # =========================
+    # ANTI LINK
+    # =========================
+
     link_pattern = r"(https?://\S+|www\.\S+)"
 
-    if re.search(
-        link_pattern,
-        message.content,
-        re.IGNORECASE
+    # צוות יכול לשלוח קישורים
+    if (
+        re.search(
+            link_pattern,
+            message.content,
+            re.IGNORECASE
+        )
+        and not is_staff(message.author)
     ):
 
         try:
@@ -1007,7 +1104,9 @@ async def on_message(message):
         except:
             pass
 
-        warnings = add_warning(user_id)
+        warnings = add_warning(
+            user_id
+        )
 
         try:
 
@@ -1024,7 +1123,9 @@ async def on_message(message):
 
         return
 
-    await bot.process_commands(message)
+    await bot.process_commands(
+        message
+    )
 
 
 # =========================
@@ -1032,7 +1133,9 @@ async def on_message(message):
 # =========================
 
 @bot.event
-async def on_member_join(member):
+async def on_member_join(
+    member
+):
 
     channel = discord.utils.find(
         lambda c: c.name.lower() in [
@@ -1079,11 +1182,19 @@ async def on_member_join(member):
 async def setup_hook():
 
     # טוען את הכפתורים
-    bot.add_view(TicketView())
-    bot.add_view(TicketControlView())
-    bot.add_view(SuggestionPanelView())
+    bot.add_view(
+        TicketView()
+    )
 
-    # טוען מחדש את כפתורי ההצבעה של ההצעות הקיימות
+    bot.add_view(
+        TicketControlView()
+    )
+
+    bot.add_view(
+        SuggestionPanelView()
+    )
+
+    # טוען מחדש את כפתורי ההצבעות
     cursor.execute(
         """
         SELECT id
@@ -1095,8 +1206,11 @@ async def setup_hook():
     suggestions = cursor.fetchall()
 
     for row in suggestions:
+
         bot.add_view(
-            SuggestionVoteView(row[0])
+            SuggestionVoteView(
+                row[0]
+            )
         )
 
     # מוחק פקודות ישנות מהשרת
@@ -1119,6 +1233,7 @@ async def setup_hook():
     )
 
     for command in synced:
+
         print(
             f"/{command.name}"
         )
