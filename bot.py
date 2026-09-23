@@ -1,45 +1,35 @@
 import discord
 from discord.ext import commands
-import re
+from discord import app_commands
 import os
-import asyncio
 import sqlite3
 import time
+import re
 
-PREFIX = "!"
 
-TICKET_CATEGORY = "Tickets"
+# =========================================================
+# הגדרות
+# =========================================================
+
+XP_PER_MESSAGE = 50
+XP_COOLDOWN = 60
 
 STAFF_ROLES = {
     "MOD",
     "SERVER STAFF",
     "ADMIN",
     "HEAD ADMIN",
-    "FOXY KING"
+    "KING FOX"
 }
 
-XP_PER_MESSAGE = 50
-XP_COOLDOWN = 60
+DATABASE = "bot_data.db"
 
-LINK_REGEX = re.compile(
-    r"(https?://\S+|www\.\S+|discord\.gg/\S+|discord\.com/invite/\S+)",
-    re.IGNORECASE
-)
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+# =========================================================
+# Database
+# =========================================================
 
-bot = commands.Bot(
-    command_prefix=PREFIX,
-    intents=intents
-)
-
-# =========================
-# DATABASE
-# =========================
-
-db = sqlite3.connect("bot_data.db")
+db = sqlite3.connect(DATABASE)
 cursor = db.cursor()
 
 cursor.execute("""
@@ -53,27 +43,70 @@ CREATE TABLE IF NOT EXISTS users (
 db.commit()
 
 
-def get_user(user_id):
+# =========================================================
+# Bot
+# =========================================================
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.guilds = True
+intents.messages = True
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
+
+last_xp = {}
+
+
+# =========================================================
+# פונקציות XP ואזהרות
+# =========================================================
+
+def ensure_user(user_id):
     cursor.execute(
-        "SELECT xp, warnings FROM users WHERE user_id = ?",
+        "INSERT OR IGNORE INTO users (user_id, xp, warnings) VALUES (?, 0, 0)",
+        (user_id,)
+    )
+    db.commit()
+
+
+def get_xp(user_id):
+    ensure_user(user_id)
+
+    cursor.execute(
+        "SELECT xp FROM users WHERE user_id = ?",
         (user_id,)
     )
 
     result = cursor.fetchone()
 
-    if result is None:
-        cursor.execute(
-            "INSERT INTO users (user_id, xp, warnings) VALUES (?, 0, 0)",
-            (user_id,)
-        )
-        db.commit()
-        return 0, 0
+    if result:
+        return result[0]
 
-    return result
+    return 0
+
+
+def get_warnings(user_id):
+    ensure_user(user_id)
+
+    cursor.execute(
+        "SELECT warnings FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+
+    result = cursor.fetchone()
+
+    if result:
+        return result[0]
+
+    return 0
 
 
 def add_xp(user_id, amount):
-    get_user(user_id)
+    ensure_user(user_id)
 
     cursor.execute(
         "UPDATE users SET xp = xp + ? WHERE user_id = ?",
@@ -84,7 +117,7 @@ def add_xp(user_id, amount):
 
 
 def add_warning(user_id):
-    get_user(user_id)
+    ensure_user(user_id)
 
     cursor.execute(
         "UPDATE users SET warnings = warnings + 1 WHERE user_id = ?",
@@ -93,47 +126,47 @@ def add_warning(user_id):
 
     db.commit()
 
-    cursor.execute(
-        "SELECT warnings FROM users WHERE user_id = ?",
-        (user_id,)
-    )
+    return get_warnings(user_id)
 
-    return cursor.fetchone()[0]
-
-
-# =========================
-# STAFF CHECK
-# =========================
 
 def is_staff(member):
+    if not isinstance(member, discord.Member):
+        return False
+
     return any(
         role.name.upper() in STAFF_ROLES
         for role in member.roles
     )
 
 
-# =========================
-# XP COOLDOWN
-# =========================
-
-xp_cooldowns = {}
-
-
-# =========================
-# BOT READY
-# =========================
+# =========================================================
+# התחברות
+# =========================================================
 
 @bot.event
 async def on_ready():
-    print(f"הבוט מחובר בתור {bot.user}")
 
-    bot.add_view(TicketView())
-    bot.add_view(CloseTicketView())
+    try:
+        synced = await bot.tree.sync()
+
+        print(
+            f"סונכרנו {len(synced)} פקודות Slash."
+        )
+
+    except Exception as e:
+
+        print(
+            f"שגיאה בסנכרון פקודות: {e}"
+        )
+
+    print(
+        f"הבוט מחובר בתור {bot.user}"
+    )
 
 
-# =========================
-# MESSAGE SYSTEM
-# =========================
+# =========================================================
+# XP + מחיקת קישורים
+# =========================================================
 
 @bot.event
 async def on_message(message):
@@ -141,66 +174,303 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # XP על הודעות בצ'אט
-    now = time.time()
+    user_id = message.author.id
+    current_time = time.time()
 
-    last_message = xp_cooldowns.get(
-        message.author.id,
-        0
-    )
-
-    if now - last_message >= XP_COOLDOWN:
+    # XP
+    if (
+        user_id not in last_xp
+        or current_time - last_xp[user_id] >= XP_COOLDOWN
+    ):
 
         add_xp(
-            message.author.id,
+            user_id,
             XP_PER_MESSAGE
         )
 
-        xp_cooldowns[message.author.id] = now
+        last_xp[user_id] = current_time
 
-    # חסימת קישורים
-    if LINK_REGEX.search(message.content):
+    # בדיקת קישור
+    url_pattern = r"(https?://\S+|www\.\S+)"
 
-        # צוות יכול לשלוח קישורים
-        if not is_staff(message.author):
+    if re.search(
+        url_pattern,
+        message.content,
+        re.IGNORECASE
+    ):
+
+        try:
+
+            await message.delete()
+
+            add_warning(
+                message.author.id
+            )
 
             try:
-                await message.delete()
 
-                warnings = add_warning(
-                    message.author.id
+                await message.author.send(
+                    "⚠️ **קיבלת אזהרה**\n\n"
+                    "שליחת קישורים אינה מותרת בשרת.\n"
+                    "ההודעה שלך נמחקה באופן אוטומטי."
                 )
 
-                try:
-                    await message.author.send(
-                        "🚫 **קישור נחסם**\n\n"
-                        "הודעתך נמחקה מכיוון "
-                        "ששליחת קישורים אינה מותרת בשרת.\n\n"
-                        f"⚠️ אזהרות: **{warnings}**"
-                    )
-
-                except discord.Forbidden:
-                    pass
-
             except discord.Forbidden:
-                print("אין לבוט הרשאה למחוק הודעות.")
+                pass
+
+        except discord.Forbidden:
+            pass
+
+        except Exception as e:
+
+            print(
+                f"שגיאה בטיפול בקישור: {e}"
+            )
+
+        return
 
     await bot.process_commands(message)
 
 
-# =========================
-# TICKET SYSTEM
-# =========================
+# =========================================================
+# /xp
+# =========================================================
 
-class TicketView(discord.ui.View):
+@bot.tree.command(
+    name="xp",
+    description="מציג את כמות ה-XP האישית שלך"
+)
+@app_commands.guild_only()
+async def xp_command(
+    interaction: discord.Interaction
+):
+
+    xp = get_xp(
+        interaction.user.id
+    )
+
+    embed = discord.Embed(
+        title="📊 ה־XP שלך",
+        description=(
+            f"יש לך כרגע **{xp} XP**."
+        ),
+        color=discord.Color.blue()
+    )
+
+    embed.set_footer(
+        text="המידע הזה גלוי רק לך."
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# =========================================================
+# /warnings
+# =========================================================
+
+@bot.tree.command(
+    name="warnings",
+    description="מציג את מספר האזהרות האישיות שלך"
+)
+@app_commands.guild_only()
+async def warnings_command(
+    interaction: discord.Interaction
+):
+
+    warnings = get_warnings(
+        interaction.user.id
+    )
+
+    embed = discord.Embed(
+        title="⚠️ האזהרות שלך",
+        description=(
+            f"יש לך כרגע **{warnings} אזהרות**."
+        ),
+        color=discord.Color.orange()
+    )
+
+    embed.set_footer(
+        text="המידע הזה גלוי רק לך."
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# =========================================================
+# /warn
+# =========================================================
+
+@bot.tree.command(
+    name="warn",
+    description="נותן אזהרה למשתמש"
+)
+@app_commands.describe(
+    member="המשתמש שיקבל את האזהרה",
+    reason="הסיבה לאזהרה"
+)
+@app_commands.guild_only()
+async def warn_command(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str
+):
+
+    # בדיקת צוות
+    if not is_staff(
+        interaction.user
+    ):
+
+        await interaction.response.send_message(
+            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
+            ephemeral=True
+        )
+
+        return
+
+    # אי אפשר להזהיר בוט
+    if member.bot:
+
+        await interaction.response.send_message(
+            "❌ אי אפשר לתת אזהרה לבוט.",
+            ephemeral=True
+        )
+
+        return
+
+    # אי אפשר להזהיר את עצמך
+    if member.id == interaction.user.id:
+
+        await interaction.response.send_message(
+            "❌ אי אפשר לתת אזהרה לעצמך.",
+            ephemeral=True
+        )
+
+        return
+
+    warning_number = add_warning(
+        member.id
+    )
+
+    # הודעה פרטית למי שנתן את האזהרה
+    embed = discord.Embed(
+        title="⚠️ אזהרה ניתנה",
+        color=discord.Color.orange()
+    )
+
+    embed.add_field(
+        name="משתמש",
+        value=member.mention,
+        inline=False
+    )
+
+    embed.add_field(
+        name="סיבה",
+        value=reason,
+        inline=False
+    )
+
+    embed.add_field(
+        name="מספר אזהרות",
+        value=str(warning_number),
+        inline=False
+    )
+
+    embed.set_footer(
+        text="ההודעה הזאת גלויה רק לך."
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+    # הודעה פרטית למשתמש שקיבל אזהרה
+    try:
+
+        dm_embed = discord.Embed(
+            title="⚠️ קיבלת אזהרה",
+            color=discord.Color.orange()
+        )
+
+        dm_embed.add_field(
+            name="שרת",
+            value=interaction.guild.name,
+            inline=False
+        )
+
+        dm_embed.add_field(
+            name="סיבה",
+            value=reason,
+            inline=False
+        )
+
+        dm_embed.add_field(
+            name="מספר אזהרות",
+            value=str(warning_number),
+            inline=False
+        )
+
+        await member.send(
+            embed=dm_embed
+        )
+
+    except discord.Forbidden:
+        pass
+
+
+# =========================================================
+# /ticket
+# =========================================================
+
+@bot.tree.command(
+    name="ticket",
+    description="פותח פאנל פתיחת טיקט"
+)
+@app_commands.guild_only()
+async def ticket_command(
+    interaction: discord.Interaction
+):
+
+    embed = discord.Embed(
+        title="🎫 מערכת טיקטים",
+        description=(
+            "צריכים עזרה?\n\n"
+            "לחצו על **פתיחת טיקט** "
+            "ובחרו את סוג הפנייה שלכם."
+        ),
+        color=discord.Color.blue()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=TicketView()
+    )
+
+
+# =========================================================
+# פאנל פתיחת טיקט
+# =========================================================
+
+class TicketView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
-        label="פתח טיקט",
-        emoji="🎫",
+        label="פתיחת טיקט",
         style=discord.ButtonStyle.primary,
+        emoji="🎫",
         custom_id="open_ticket"
     )
     async def open_ticket(
@@ -209,104 +479,235 @@ class TicketView(discord.ui.View):
         button: discord.ui.Button
     ):
 
-        guild = interaction.guild
-        user = interaction.user
-
-        existing = discord.utils.get(
-            guild.text_channels,
-            name=f"ticket-{user.id}"
+        await interaction.response.send_message(
+            "🎫 **בחר את סוג הטיקט:**",
+            view=TicketTypeView(),
+            ephemeral=True
         )
 
-        if existing:
+
+# =========================================================
+# בחירת סוג טיקט
+# =========================================================
+
+class TicketTypeView(
+    discord.ui.View
+):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=60
+        )
+
+    @discord.ui.select(
+        placeholder="בחר סוג טיקט...",
+        custom_id="ticket_type",
+        options=[
+            discord.SelectOption(
+                label="באג",
+                description="דיווח על באג או תקלה בשרת",
+                emoji="🐛",
+                value="bug"
+            ),
+
+            discord.SelectOption(
+                label="התקבלות לצוות",
+                description="בקשה להצטרפות לצוות השרת",
+                emoji="👮",
+                value="staff"
+            ),
+
+            discord.SelectOption(
+                label="דיווח על משתמש",
+                description="דיווח על משתמש שעבר על חוקי השרת",
+                emoji="🚨",
+                value="report"
+            )
+        ]
+    )
+    async def select_ticket(
+        self,
+        interaction: discord.Interaction,
+        select: discord.ui.Select
+    ):
+
+        ticket_types = {
+
+            "bug": "באג",
+
+            "staff": "התקבלות לצוות",
+
+            "report": "דיווח על משתמש"
+        }
+
+        ticket_type = ticket_types[
+            select.values[0]
+        ]
+
+        guild = interaction.guild
+
+        # בדיקה אם כבר יש טיקט
+        existing_channel = discord.utils.get(
+            guild.text_channels,
+            name=f"ticket-{interaction.user.id}"
+        )
+
+        if existing_channel:
 
             await interaction.response.send_message(
-                f"יש לך כבר טיקט פתוח: {existing.mention}",
+                f"❌ כבר יש לך טיקט פתוח: "
+                f"{existing_channel.mention}",
                 ephemeral=True
             )
 
             return
 
+        # קטגוריה
         category = discord.utils.get(
             guild.categories,
-            name=TICKET_CATEGORY
+            name="Tickets"
         )
 
         if category is None:
 
             category = await guild.create_category(
-                TICKET_CATEGORY
+                "Tickets"
             )
 
+        # הרשאות
         overwrites = {
+
             guild.default_role:
                 discord.PermissionOverwrite(
                     view_channel=False
                 ),
 
-            user:
+            interaction.user:
                 discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
                     read_message_history=True
+                ),
+
+            guild.me:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    manage_channels=True
                 )
         }
 
-        # כל רולי הצוות
+        # הרשאות צוות
         for role in guild.roles:
 
             if role.name.upper() in STAFF_ROLES:
 
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True
+                overwrites[role] = (
+                    discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True
+                    )
                 )
 
+        # יצירת הטיקט
         channel = await guild.create_text_channel(
-            f"ticket-{user.id}",
+            f"ticket-{interaction.user.id}",
             category=category,
             overwrites=overwrites
         )
 
-        await interaction.response.send_message(
-            f"🎫 הטיקט שלך נפתח: {channel.mention}",
-            ephemeral=True
-        )
-
+        # הודעת הטיקט
         embed = discord.Embed(
-            title="🎫 מרכז התמיכה",
+            title="🎫 טיקט חדש",
             description=(
-                f"שלום {user.mention}!\n\n"
-                "הטיקט שלך נפתח בהצלחה.\n"
-                "צוות השרת יגיע אליך בהקדם.\n\n"
-                "**כדי לקבל מענה מהיר:**\n"
-                "• הסבר את הבעיה\n"
-                "• צרף מידע רלוונטי\n"
-                "• המתן למענה הצוות"
+                f"**סוג הטיקט:** {ticket_type}\n\n"
+                f"**נפתח על ידי:** "
+                f"{interaction.user.mention}\n\n"
+                "צוות השרת יטפל בפנייה בהקדם.\n\n"
+                "איש צוות יכול ללחוץ על "
+                "**לקחת טיפול** כדי לקחת אחריות "
+                "על הטיקט."
             ),
-            color=discord.Color.blurple()
-        )
-
-        embed.set_footer(
-            text="הפקח פוקסי • מערכת התמיכה"
+            color=discord.Color.blue()
         )
 
         await channel.send(
-            content=user.mention,
+            content=interaction.user.mention,
             embed=embed,
-            view=CloseTicketView()
+            view=TicketControlView()
+        )
+
+        await interaction.response.send_message(
+            f"✅ הטיקט שלך נפתח: "
+            f"{channel.mention}",
+            ephemeral=True
         )
 
 
-class CloseTicketView(discord.ui.View):
+# =========================================================
+# כפתורי טיקט
+# =========================================================
+
+class TicketControlView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
+
+    # -----------------------------------------------------
+    # לקחת טיפול
+    # -----------------------------------------------------
 
     @discord.ui.button(
-        label="סגור טיקט",
-        emoji="🔒",
+        label="לקחת טיפול",
+        style=discord.ButtonStyle.success,
+        emoji="👤",
+        custom_id="take_ticket"
+    )
+    async def take_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if not is_staff(
+            interaction.user
+        ):
+
+            await interaction.response.send_message(
+                "❌ רק MOD ומעלה יכולים לקחת טיפול בטיקט.",
+                ephemeral=True
+            )
+
+            return
+
+        await interaction.response.send_message(
+            f"🎫 **{interaction.user.mention} "
+            f"לקח טיפול בטיקט הזה.**"
+        )
+
+        # מניעת לקיחת טיפול נוספת
+        button.disabled = True
+
+        await interaction.message.edit(
+            view=self
+        )
+
+    # -----------------------------------------------------
+    # סגירת טיקט
+    # -----------------------------------------------------
+
+    @discord.ui.button(
+        label="סגירת טיקט",
         style=discord.ButtonStyle.danger,
+        emoji="🔒",
         custom_id="close_ticket"
     )
     async def close_ticket(
@@ -315,174 +716,33 @@ class CloseTicketView(discord.ui.View):
         button: discord.ui.Button
     ):
 
+        if not is_staff(
+            interaction.user
+        ):
+
+            await interaction.response.send_message(
+                "❌ רק MOD ומעלה יכולים לסגור טיקט.",
+                ephemeral=True
+            )
+
+            return
+
         await interaction.response.send_message(
-            "🔒 הטיקט ייסגר בעוד 5 שניות..."
+            "🔒 **הטיקט ייסגר בעוד 3 שניות.**"
         )
 
-        await asyncio.sleep(5)
+        await discord.utils.sleep_until(
+            discord.utils.utcnow()
+            + discord.timedelta(seconds=3)
+        )
 
         await interaction.channel.delete()
 
 
-# =========================
-# TICKET COMMAND
-# =========================
+# =========================================================
+# הפעלת הבוט
+# =========================================================
 
-@bot.command()
-async def ticket(ctx):
+TOKEN = os.environ["DISCORD_TOKEN"]
 
-    if not is_staff(ctx.author):
-
-        await ctx.send(
-            "❌ רק צוות השרת יכול להשתמש בפקודה הזאת."
-        )
-
-        return
-
-    embed = discord.Embed(
-        title="🎫 מרכז התמיכה",
-        description=(
-            "צריכים עזרה?\n\n"
-            "לחצו על **פתח טיקט** כדי לפתוח "
-            "חדר פרטי עם צוות השרת.\n\n"
-            "אנא הסבירו את הבעיה בצורה ברורה."
-        ),
-        color=discord.Color.blurple()
-    )
-
-    embed.set_footer(
-        text="הפקח פוקסי • מערכת הטיקטים"
-    )
-
-    await ctx.send(
-        embed=embed,
-        view=TicketView()
-    )
-
-
-# =========================
-# XP COMMAND
-# =========================
-
-@bot.command()
-async def xp(
-    ctx,
-    member: discord.Member = None
-):
-
-    member = member or ctx.author
-
-    user_xp, warnings = get_user(
-        member.id
-    )
-
-    embed = discord.Embed(
-        title="⭐ מערכת XP",
-        description=(
-            f"**{member.display_name}**\n\n"
-            f"⭐ XP: **{user_xp}**\n"
-            f"⚠️ אזהרות: **{warnings}**"
-        ),
-        color=discord.Color.gold()
-    )
-
-    await ctx.send(embed=embed)
-
-
-# =========================
-# WARN COMMAND
-# =========================
-
-@bot.command()
-async def warn(
-    ctx,
-    member: discord.Member,
-    *,
-    reason="לא נמסרה סיבה"
-):
-
-    if not is_staff(ctx.author):
-
-        await ctx.send(
-            "❌ רק MOD ומעלה יכולים לתת אזהרות."
-        )
-
-        return
-
-    warnings = add_warning(
-        member.id
-    )
-
-    embed = discord.Embed(
-        title="⚠️ אזהרה",
-        description=(
-            f"{member.mention} קיבל אזהרה.\n\n"
-            f"**סיבה:** {reason}\n"
-            f"**מספר אזהרות:** {warnings}"
-        ),
-        color=discord.Color.orange()
-    )
-
-    await ctx.send(embed=embed)
-
-    try:
-
-        await member.send(
-            "⚠️ **קיבלת אזהרה בשרת.**\n\n"
-            f"סיבה: {reason}\n"
-            f"אזהרות: {warnings}"
-        )
-
-    except discord.Forbidden:
-        pass
-
-
-# =========================
-# ERROR HANDLING
-# =========================
-
-@bot.event
-async def on_command_error(
-    ctx,
-    error
-):
-
-    if isinstance(
-        error,
-        commands.MissingRequiredArgument
-    ):
-
-        await ctx.send(
-            "❌ חסר מידע בפקודה."
-        )
-
-    elif isinstance(
-        error,
-        commands.MemberNotFound
-    ):
-
-        await ctx.send(
-            "❌ לא מצאתי את המשתמש."
-        )
-
-    elif isinstance(
-        error,
-        commands.CommandNotFound
-    ):
-
-        return
-
-    else:
-
-        print(
-            f"Command error: {error}"
-        )
-
-
-# =========================
-# START BOT
-# =========================
-
-bot.run(
-    os.environ["DISCORD_TOKEN"]
-)
+bot.run(TOKEN)
