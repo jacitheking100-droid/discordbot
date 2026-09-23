@@ -1573,60 +1573,37 @@ async def ticket_command(
 @bot.event
 async def setup_hook():
 
-    # Persistent views
-
-    bot.add_view(
-        XPShopView()
-    )
-
-    bot.add_view(
-        SuggestionPanelView()
-    )
-
-    bot.add_view(
-        TicketView()
-    )
-
-    bot.add_view(
-        CloseTicketView()
-    )
-
-    # Restore suggestion buttons
+    bot.add_view(XPShopView())
+    bot.add_view(SuggestionPanelView())
+    bot.add_view(TicketView())
+    bot.add_view(CloseTicketView())
 
     rows = cursor.execute(
         "SELECT id FROM suggestions WHERE message_id IS NOT NULL"
     ).fetchall()
 
     for row in rows:
-
         try:
-
             bot.add_view(
-                SuggestionVoteView(
-                    row["id"]
-                )
+                SuggestionVoteView(row["id"])
             )
-
         except Exception as e:
+            print(f"Suggestion restore error: {e}")
 
-            print(
-                f"Suggestion restore error: {e}"
-            )
-
-    # Sync commands to Foxes
-
+    # סנכרון הפקודות לשרת
     try:
-
         synced = await bot.tree.sync(
-            guild=GUILD
+            guild=discord.Object(id=GUILD_ID)
         )
 
         print(
-            f"✅ Synced {len(synced)} commands to Foxes."
+            f"✅ Synced {len(synced)} commands to Foxes"
         )
 
-    except Exception as e:
+        for command in synced:
+            print(f"   /{command.name}")
 
+    except Exception as e:
         print(
             f"❌ Command sync error: {e}"
         )
