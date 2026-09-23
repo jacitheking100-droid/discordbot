@@ -8,7 +8,7 @@ import re
 import asyncio
 
 # =========================
-# הגדרות
+# SETTINGS
 # =========================
 
 XP_PER_MESSAGE = 50
@@ -26,7 +26,7 @@ STAFF_ROLES = {
 }
 
 # =========================
-# Database
+# DATABASE
 # =========================
 
 db = sqlite3.connect("bot_data.db")
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
 db.commit()
 
 # =========================
-# Intents
+# INTENTS
 # =========================
 
 intents = discord.Intents.default()
@@ -60,7 +60,7 @@ bot = commands.Bot(
 last_xp = {}
 
 # =========================
-# Database Functions
+# DATABASE FUNCTIONS
 # =========================
 
 def ensure_user(user_id):
@@ -80,6 +80,7 @@ def get_xp(user_id):
     )
 
     result = cursor.fetchone()
+
     return result[0] if result else 0
 
 
@@ -92,6 +93,7 @@ def get_warnings(user_id):
     )
 
     result = cursor.fetchone()
+
     return result[0] if result else 0
 
 
@@ -120,10 +122,11 @@ def add_warning(user_id):
 
 
 # =========================
-# Staff Check
+# STAFF
 # =========================
 
 def is_staff(member):
+
     if not isinstance(member, discord.Member):
         return False
 
@@ -134,7 +137,7 @@ def is_staff(member):
 
 
 # =========================
-# Ticket Panel
+# TICKET VIEWS
 # =========================
 
 class TicketView(discord.ui.View):
@@ -161,10 +164,6 @@ class TicketView(discord.ui.View):
         )
 
 
-# =========================
-# Ticket Type
-# =========================
-
 class TicketTypeView(discord.ui.View):
 
     def __init__(self):
@@ -181,13 +180,13 @@ class TicketTypeView(discord.ui.View):
             ),
             discord.SelectOption(
                 label="התקבלות לצוות",
-                description="בקשה להצטרף לצוות השרת",
+                description="בקשה להצטרף לצוות",
                 emoji="👮",
                 value="staff"
             ),
             discord.SelectOption(
                 label="דיווח על משתמש",
-                description="דיווח על משתמש שעובר על חוקי השרת",
+                description="דיווח על משתמש",
                 emoji="🚨",
                 value="report"
             )
@@ -202,15 +201,15 @@ class TicketTypeView(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
 
-        existing_channel = discord.utils.get(
+        existing = discord.utils.get(
             guild.text_channels,
             name=f"ticket-{user.id}"
         )
 
-        if existing_channel:
+        if existing:
 
             await interaction.response.send_message(
-                f"❌ כבר יש לך טיקט פתוח: {existing_channel.mention}",
+                f"❌ כבר יש לך טיקט פתוח: {existing.mention}",
                 ephemeral=True
             )
 
@@ -223,25 +222,31 @@ class TicketTypeView(discord.ui.View):
 
         if category is None:
 
-            category = await guild.create_category("Tickets")
+            category = await guild.create_category(
+                "Tickets"
+            )
 
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=False
-            ),
 
-            user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            ),
+            guild.default_role:
+                discord.PermissionOverwrite(
+                    view_channel=False
+                ),
 
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                read_message_history=True
-            )
+            user:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                ),
+
+            guild.me:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    read_message_history=True
+                )
         }
 
         for role in guild.roles:
@@ -260,13 +265,13 @@ class TicketTypeView(discord.ui.View):
             overwrites=overwrites
         )
 
-        ticket_names = {
+        names = {
             "bug": "🐛 באג",
             "staff": "👮 התקבלות לצוות",
             "report": "🚨 דיווח על משתמש"
         }
 
-        ticket_name = ticket_names.get(
+        ticket_type = names.get(
             select.values[0],
             "פנייה"
         )
@@ -275,9 +280,8 @@ class TicketTypeView(discord.ui.View):
             title="🎫 טיקט חדש",
             description=(
                 f"שלום {user.mention}\n\n"
-                f"**סוג הפנייה:** {ticket_name}\n\n"
-                "צוות השרת יטפל בפנייה בהקדם האפשרי.\n"
-                "אין צורך לתייג את הצוות ללא צורך."
+                f"**סוג הפנייה:** {ticket_type}\n\n"
+                "צוות השרת יטפל בפנייה בהקדם האפשרי."
             ),
             color=discord.Color.blue()
         )
@@ -292,14 +296,10 @@ class TicketTypeView(discord.ui.View):
         )
 
         await interaction.response.send_message(
-            f"✅ הטיקט נפתח בהצלחה: {channel.mention}",
+            f"✅ הטיקט נפתח: {channel.mention}",
             ephemeral=True
         )
 
-
-# =========================
-# Ticket Controls
-# =========================
 
 class TicketControlView(discord.ui.View):
 
@@ -321,7 +321,7 @@ class TicketControlView(discord.ui.View):
         if not is_staff(interaction.user):
 
             await interaction.response.send_message(
-                "❌ רק צוות יכול לקחת טיפול בטיקט.",
+                "❌ רק צוות יכול לקחת טיפול.",
                 ephemeral=True
             )
 
@@ -372,13 +372,12 @@ class TicketControlView(discord.ui.View):
 
 
 # =========================
-# Slash Commands
+# SLASH COMMANDS
 # =========================
 
 @bot.tree.command(
     name="xp",
-    description="בדיקת כמות ה-XP שלך",
-    guild=GUILD
+    description="בדיקת כמות ה-XP שלך"
 )
 async def xp_command(interaction: discord.Interaction):
 
@@ -398,8 +397,7 @@ async def xp_command(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="warnings",
-    description="בדיקת מספר האזהרות שלך",
-    guild=GUILD
+    description="בדיקת מספר האזהרות שלך"
 )
 async def warnings_command(interaction: discord.Interaction):
 
@@ -419,8 +417,7 @@ async def warnings_command(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="warn",
-    description="מתן אזהרה למשתמש",
-    guild=GUILD
+    description="מתן אזהרה למשתמש"
 )
 @app_commands.describe(
     member="המשתמש שיקבל את האזהרה",
@@ -490,8 +487,7 @@ async def warn_command(
 
 @bot.tree.command(
     name="ticket",
-    description="שליחת פאנל פתיחת טיקט",
-    guild=GUILD
+    description="שליחת פאנל פתיחת טיקט"
 )
 async def ticket_command(
     interaction: discord.Interaction
@@ -510,20 +506,19 @@ async def ticket_command(
         title="🎫 מערכת הטיקטים",
         description=(
             "ברוכים הבאים למערכת התמיכה.\n\n"
-            "כדי לפתוח טיקט, לחצו על הכפתור "
-            "**פתיחת טיקט** ובחרו את סוג הפנייה שלכם.\n\n"
+            "לחצו על **פתיחת טיקט** ובחרו את סוג הפנייה.\n\n"
             "🐛 **באג**\n"
-            "דיווח על תקלה או בעיה.\n\n"
+            "דיווח על תקלה.\n\n"
             "👮 **התקבלות לצוות**\n"
-            "בקשה להצטרף לצוות השרת.\n\n"
+            "בקשה להצטרף לצוות.\n\n"
             "🚨 **דיווח על משתמש**\n"
-            "דיווח על משתמש שעובר על חוקי השרת."
+            "דיווח על הפרת חוקי השרת."
         ),
         color=discord.Color.blue()
     )
 
     embed.set_footer(
-        text="מערכת הטיקטים • צוות השרת"
+        text="מערכת הטיקטים • Foxy bot"
     )
 
     await interaction.response.send_message(
@@ -533,7 +528,7 @@ async def ticket_command(
 
 
 # =========================
-# XP + Links
+# XP + LINK SYSTEM
 # =========================
 
 @bot.event
@@ -549,7 +544,12 @@ async def on_message(message):
         user_id not in last_xp
         or now - last_xp[user_id] >= XP_COOLDOWN
     ):
-        add_xp(user_id, XP_PER_MESSAGE)
+
+        add_xp(
+            user_id,
+            XP_PER_MESSAGE
+        )
+
         last_xp[user_id] = now
 
     link_pattern = r"(https?://\S+|www\.\S+)"
@@ -574,9 +574,7 @@ async def on_message(message):
 
 הודעה שלך נמחקה מכיוון שהיא הכילה קישור.
 
-מספר האזהרות שלך: **{warnings}**
-
-נא להקפיד על חוקי השרת."""
+מספר האזהרות שלך: **{warnings}**"""
             )
 
         except:
@@ -588,32 +586,38 @@ async def on_message(message):
 
 
 # =========================
-# Startup
+# STARTUP
 # =========================
 
 @bot.event
 async def setup_hook():
 
+    # טוען את הכפתורים
     bot.add_view(TicketView())
     bot.add_view(TicketControlView())
 
-    try:
+    # מוחק פקודות ישנות מהשרת
+    bot.tree.clear_commands(
+        guild=GUILD
+    )
 
-        synced = await bot.tree.sync(
-            guild=GUILD
-        )
+    # מוסיף את הפקודות הנוכחיות לשרת
+    bot.tree.copy_global_to(
+        guild=GUILD
+    )
 
+    # סנכרון ישיר לשרת
+    synced = await bot.tree.sync(
+        guild=GUILD
+    )
+
+    print(
+        f"סונכרנו {len(synced)} פקודות Slash לשרת"
+    )
+
+    for command in synced:
         print(
-            f"סונכרנו {len(synced)} פקודות Slash לשרת"
-        )
-
-        for command in synced:
-            print(f"/{command.name}")
-
-    except Exception as e:
-
-        print(
-            f"שגיאה בסנכרון פקודות: {e}"
+            f"/{command.name}"
         )
 
 
@@ -621,17 +625,22 @@ async def setup_hook():
 async def on_ready():
 
     print("--------------------------------")
-    print(f"הבוט מחובר בתור {bot.user}")
+    print(
+        f"הבוט מחובר בתור {bot.user}"
+    )
     print("--------------------------------")
 
 
 # =========================
-# Run
+# RUN
 # =========================
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
+TOKEN = os.environ.get(
+    "DISCORD_TOKEN"
+)
 
 if not TOKEN:
+
     raise RuntimeError(
         "DISCORD_TOKEN לא מוגדר ב-Railway"
     )
