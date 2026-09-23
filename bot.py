@@ -9,6 +9,7 @@ import time
 PREFIX = "!"
 
 TICKET_CATEGORY = "Tickets"
+
 STAFF_ROLES = {
     "MOD",
     "SERVER STAFF",
@@ -17,7 +18,7 @@ STAFF_ROLES = {
     "FOXY KING"
 }
 
-XP_PER_MESSAGE = 5
+XP_PER_MESSAGE = 50
 XP_COOLDOWN = 60
 
 LINK_REGEX = re.compile(
@@ -140,10 +141,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # =====================
-    # XP
-    # =====================
-
+    # XP על הודעות בצ'אט
     now = time.time()
 
     last_message = xp_cooldowns.get(
@@ -160,13 +158,10 @@ async def on_message(message):
 
         xp_cooldowns[message.author.id] = now
 
-    # =====================
-    # LINK BLOCK
-    # =====================
-
+    # חסימת קישורים
     if LINK_REGEX.search(message.content):
 
-        # Staff can send links
+        # צוות יכול לשלוח קישורים
         if not is_staff(message.author):
 
             try:
@@ -187,15 +182,8 @@ async def on_message(message):
                 except discord.Forbidden:
                     pass
 
-                print(
-                    f"{message.author} "
-                    f"קיבל אזהרה אוטומטית."
-                )
-
             except discord.Forbidden:
-                print(
-                    "אין לבוט הרשאה למחוק הודעות."
-                )
+                print("אין לבוט הרשאה למחוק הודעות.")
 
     await bot.process_commands(message)
 
@@ -250,7 +238,6 @@ class TicketView(discord.ui.View):
             )
 
         overwrites = {
-
             guild.default_role:
                 discord.PermissionOverwrite(
                     view_channel=False
@@ -264,7 +251,7 @@ class TicketView(discord.ui.View):
                 )
         }
 
-        # Staff roles
+        # כל רולי הצוות
         for role in guild.roles:
 
             if role.name.upper() in STAFF_ROLES:
