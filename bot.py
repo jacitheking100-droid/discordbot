@@ -28,6 +28,45 @@ STAFF_ROLES = {
 SUGGESTION_INPUT_CHANNEL = "💡・הצעות-לשרת"
 SUGGESTION_OUTPUT_CHANNEL = "📋・הצעות-שהוצעו"
 
+XP_SHOP_CHANNEL = "🛒・חנות-xp"
+
+# =========================
+# XP SHOP
+# =========================
+
+XP_SHOP_ITEMS = [
+    {
+        "name": "🟢 Active Member",
+        "role_name": "Active Member",
+        "price": 2500
+    },
+    {
+        "name": "🔵 Elite Member",
+        "role_name": "Elite Member",
+        "price": 5000
+    },
+    {
+        "name": "🟣 Premium",
+        "role_name": "Premium",
+        "price": 10000
+    },
+    {
+        "name": "🟠 Legend",
+        "role_name": "Legend",
+        "price": 20000
+    },
+    {
+        "name": "🔴 OG Fox",
+        "role_name": "OG Fox",
+        "price": 35000
+    },
+    {
+        "name": "👑 Royal Fox",
+        "role_name": "Royal Fox",
+        "price": 50000
+    }
+]
+
 # =========================
 # DATABASE
 # =========================
@@ -87,14 +126,17 @@ last_xp = {}
 # =========================
 
 def ensure_user(user_id):
+
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, xp, warnings) VALUES (?, 0, 0)",
         (user_id,)
     )
+
     db.commit()
 
 
 def get_xp(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -108,6 +150,7 @@ def get_xp(user_id):
 
 
 def get_warnings(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -121,6 +164,7 @@ def get_warnings(user_id):
 
 
 def add_xp(user_id, amount):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -131,7 +175,30 @@ def add_xp(user_id, amount):
     db.commit()
 
 
+def remove_xp(user_id, amount):
+
+    ensure_user(user_id)
+
+    cursor.execute(
+        """
+        UPDATE users
+        SET xp = xp - ?
+        WHERE user_id = ? AND xp >= ?
+        """,
+        (
+            amount,
+            user_id,
+            amount
+        )
+    )
+
+    db.commit()
+
+    return cursor.rowcount > 0
+
+
 def add_warning(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -157,6 +224,288 @@ def is_staff(member):
         role.name.upper() in STAFF_ROLES
         for role in member.roles
     )
+
+
+# =========================
+# XP SHOP FUNCTIONS
+# =========================
+
+async def get_or_create_shop_role(guild, role_name):
+
+    role = discord.utils.get(
+        guild.roles,
+        name=role_name
+    )
+
+    if role:
+        return role
+
+    try:
+
+        role = await guild.create_role(
+            name=role_name,
+            reason="יצירת רול לחנות XP"
+        )
+
+        return role
+
+    except discord.Forbidden:
+
+        return None
+
+    except Exception:
+
+        return None
+
+
+# =========================
+# XP SHOP VIEW
+# =========================
+
+class XPShopView(discord.ui.View):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=None
+        )
+
+    @discord.ui.select(
+        placeholder="🛒 בחרו רול לקנייה...",
+        custom_id="xp_shop_select",
+        options=[
+            discord.SelectOption(
+                label="Active Member",
+                description="2,500 XP",
+                emoji="🟢",
+                value="2500"
+            ),
+            discord.SelectOption(
+                label="Elite Member",
+                description="5,000 XP",
+                emoji="🔵",
+                value="5000"
+            ),
+            discord.SelectOption(
+                label="Premium",
+                description="10,000 XP",
+                emoji="🟣",
+                value="10000"
+            ),
+            discord.SelectOption(
+                label="Legend",
+                description="20,000 XP",
+                emoji="🟠",
+                value="20000"
+            ),
+            discord.SelectOption(
+                label="OG Fox",
+                description="35,000 XP",
+                emoji="🔴",
+                value="35000"
+            ),
+            discord.SelectOption(
+                label="Royal Fox",
+                description="50,000 XP",
+                emoji="👑",
+                value="50000"
+            )
+        ]
+    )
+    async def buy_role(
+        self,
+        interaction: discord.Interaction,
+        select: discord.ui.Select
+    ):
+
+        selected_price = int(
+            select.values[0]
+        )
+
+        item = next(
+            (
+                item
+                for item in XP_SHOP_ITEMS
+                if item["price"] == selected_price
+            ),
+            None
+        )
+
+        if item is None:
+
+            await interaction.response.send_message(
+                "❌ הרול לא נמצא.",
+                ephemeral=True
+            )
+
+            return
+
+        user = interaction.user
+        guild = interaction.guild
+
+        role = discord.utils.get(
+            guild.roles,
+            name=item["role_name"]
+        )
+
+        if role is None:
+
+            role = await get_or_create_shop_role(
+                guild,
+                item["role_name"]
+            )
+
+        if role is None:
+
+            await interaction.response.send_message(
+                "❌ הבוט לא הצליח ליצור את הרול.",
+                ephemeral=True
+            )
+
+            return
+
+        if role in user.roles:
+
+            await interaction.response.send_message(
+                f"❌ כבר יש לכם את הרול **{role.name}**.",
+                ephemeral=True
+            )
+
+            return
+
+        current_xp = get_xp(
+            user.id
+        )
+
+        if current_xp < item["price"]:
+
+            missing = item["price"] - current_xp
+
+            await interaction.response.send_message(
+                f"❌ **אין לכם מספיק XP.**\n\n"
+                f"יש לכם: **{current_xp:,} XP**\n"
+                f"מחיר: **{item['price']:,} XP**\n"
+                f"חסר לכם: **{missing:,} XP**",
+                ephemeral=True
+            )
+
+            return
+
+        # בדיקה שהבוט יכול לתת את הרול
+        if role >= guild.me.top_role:
+
+            await interaction.response.send_message(
+                "❌ הבוט לא יכול לתת את הרול הזה. "
+                "צריך להעביר את הרול מתחת לרול של הבוט.",
+                ephemeral=True
+            )
+
+            return
+
+        # הורדת XP
+        success = remove_xp(
+            user.id,
+            item["price"]
+        )
+
+        if not success:
+
+            await interaction.response.send_message(
+                "❌ אין לכם מספיק XP.",
+                ephemeral=True
+            )
+
+            return
+
+        try:
+
+            await user.add_roles(
+                role,
+                reason="רכישה מחנות XP"
+            )
+
+        except discord.Forbidden:
+
+            # במקרה שהרול לא ניתן, מחזירים את ה-XP
+            add_xp(
+                user.id,
+                item["price"]
+            )
+
+            await interaction.response.send_message(
+                "❌ הבוט לא הצליח לתת את הרול.",
+                ephemeral=True
+            )
+
+            return
+
+        except Exception:
+
+            add_xp(
+                user.id,
+                item["price"]
+            )
+
+            await interaction.response.send_message(
+                "❌ אירעה שגיאה במהלך הקנייה.",
+                ephemeral=True
+            )
+
+            return
+
+        remaining_xp = get_xp(
+            user.id
+        )
+
+        await interaction.response.send_message(
+            f"✅ **הרכישה הצליחה!**\n\n"
+            f"קיבלתם את הרול {role.mention}\n"
+            f"💰 שולם: **{item['price']:,} XP**\n"
+            f"📊 נשאר לכם: **{remaining_xp:,} XP**",
+            ephemeral=True
+        )
+
+
+# =========================
+# XP SHOP EMBED
+# =========================
+
+def build_xp_shop_embed():
+
+    embed = discord.Embed(
+        title="🛒 חנות XP — FOXES",
+        description=(
+            "ברוכים הבאים לחנות ה־XP של **Foxes**!\n\n"
+            "כאן תוכלו להשתמש ב־XP שצברתם כדי לקנות רולים מיוחדים.\n\n"
+            "👇 **בחרו למטה את הרול שתרצו לקנות.**"
+        ),
+        color=discord.Color.blue()
+    )
+
+    for item in XP_SHOP_ITEMS:
+
+        embed.add_field(
+            name=item["name"],
+            value=f"💰 **{item['price']:,} XP**",
+            inline=True
+        )
+
+    embed.add_field(
+        name="📌 איך זה עובד?",
+        value=(
+            "1. בוחרים רול מהתפריט\n"
+            "2. הבוט בודק את ה־XP שלכם\n"
+            "3. ה־XP יורד אוטומטית\n"
+            "4. הרול מתקבל מיד"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Foxes • חנות XP"
+    )
+
+    return embed
 
 
 # =========================
@@ -273,7 +622,6 @@ def set_vote(
         user_id
     )
 
-    # לחיצה נוספת על אותו כפתור מבטלת את ההצבעה
     if current_vote == vote:
 
         cursor.execute(
@@ -869,7 +1217,7 @@ async def xp_command(
 
     embed = discord.Embed(
         title="📊 ה-XP שלך",
-        description=f"יש לך כרגע **{xp} XP**.",
+        description=f"יש לך כרגע **{xp:,} XP**.",
         color=discord.Color.blue()
     )
 
@@ -878,6 +1226,68 @@ async def xp_command(
         ephemeral=True
     )
 
+
+# =========================
+# XP SHOP COMMAND
+# =========================
+
+@bot.tree.command(
+    name="xpshop",
+    description="שליחת חנות ה-XP"
+)
+async def xpshop_command(
+    interaction: discord.Interaction
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול לשלוח את חנות ה-XP.",
+            ephemeral=True
+        )
+
+        return
+
+    embed = build_xp_shop_embed()
+
+    # מנסים לשלוח לחדר החנות
+    channel = discord.utils.get(
+        interaction.guild.text_channels,
+        name=XP_SHOP_CHANNEL
+    )
+
+    if channel is None:
+
+        try:
+
+            channel = await interaction.guild.create_text_channel(
+                XP_SHOP_CHANNEL,
+                reason="יצירת חדר לחנות XP"
+            )
+
+        except:
+
+            await interaction.response.send_message(
+                "❌ לא הצלחתי ליצור את חדר חנות ה-XP.",
+                ephemeral=True
+            )
+
+            return
+
+    await channel.send(
+        embed=embed,
+        view=XPShopView()
+    )
+
+    await interaction.response.send_message(
+        f"✅ חנות ה-XP נשלחה ל־{channel.mention}.",
+        ephemeral=True
+    )
+
+
+# =========================
+# WARNINGS
+# =========================
 
 @bot.tree.command(
     name="warnings",
@@ -902,6 +1312,10 @@ async def warnings_command(
         ephemeral=True
     )
 
+
+# =========================
+# WARN
+# =========================
 
 @bot.tree.command(
     name="warn",
@@ -975,6 +1389,10 @@ async def warn_command(
         pass
 
 
+# =========================
+# TICKET COMMAND
+# =========================
+
 @bot.tree.command(
     name="ticket",
     description="שליחת פאנל פתיחת טיקט"
@@ -1016,6 +1434,10 @@ async def ticket_command(
         view=TicketView()
     )
 
+
+# =========================
+# SUGGESTIONS COMMAND
+# =========================
 
 @bot.tree.command(
     name="suggestions",
@@ -1181,7 +1603,7 @@ async def on_member_join(
 @bot.event
 async def setup_hook():
 
-    # טוען את הכפתורים
+    # טוען את מערכת הטיקטים
     bot.add_view(
         TicketView()
     )
@@ -1190,8 +1612,14 @@ async def setup_hook():
         TicketControlView()
     )
 
+    # טוען את מערכת ההצעות
     bot.add_view(
         SuggestionPanelView()
+    )
+
+    # טוען את חנות ה-XP
+    bot.add_view(
+        XPShopView()
     )
 
     # טוען מחדש את כפתורי ההצבעות
@@ -1238,6 +1666,10 @@ async def setup_hook():
             f"/{command.name}"
         )
 
+
+# =========================
+# READY
+# =========================
 
 @bot.event
 async def on_ready():
