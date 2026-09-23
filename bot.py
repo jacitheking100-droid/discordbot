@@ -583,7 +583,45 @@ async def on_message(message):
         return
 
     await bot.process_commands(message)
+# =========================
+# WELCOME SYSTEM
+# =========================
 
+@bot.event
+async def on_member_join(member):
+
+    # מחפש חדר בשם welcome או ברוכים-באים
+    channel = discord.utils.find(
+        lambda c: c.name.lower() in ["welcome", "👋・ברוכים-הבאים", "ברוכים-באים"],
+        member.guild.text_channels
+    )
+
+    if channel is None:
+        return
+
+    embed = discord.Embed(
+        title="🦊 ברוכים הבאים ל־Foxes!",
+        description=(
+            f"👋 ברוך הבא, {member.mention}!\n\n"
+            f"אנחנו שמחים שהצטרפת ל־**Foxes**.\n\n"
+            f"👥 אתה החבר ה־**{member.guild.member_count}** בשרת!\n\n"
+            "📜 אל תשכח לעבור על חוקי השרת\n"
+            "🦊 תהנה ותכיר את הקהילה!"
+        ),
+        color=discord.Color.blue()
+    )
+
+    # תמונת הפרופיל של המשתמש
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+    # שם המשתמש
+    embed.set_footer(
+        text=f"ברוך הבא, {member.name} • Foxes"
+    )
+
+    await channel.send(
+        embed=embed
+    )
 
 # =========================
 # STARTUP
