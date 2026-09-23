@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 import re
+import asyncio
 
 
 # =========================================================
@@ -62,7 +63,7 @@ last_xp = {}
 
 
 # =========================================================
-# פונקציות XP ואזהרות
+# פונקציות
 # =========================================================
 
 def ensure_user(user_id):
@@ -83,10 +84,7 @@ def get_xp(user_id):
 
     result = cursor.fetchone()
 
-    if result:
-        return result[0]
-
-    return 0
+    return result[0] if result else 0
 
 
 def get_warnings(user_id):
@@ -99,10 +97,7 @@ def get_warnings(user_id):
 
     result = cursor.fetchone()
 
-    if result:
-        return result[0]
-
-    return 0
+    return result[0] if result else 0
 
 
 def add_xp(user_id, amount):
@@ -165,7 +160,7 @@ async def on_ready():
 
 
 # =========================================================
-# XP + מחיקת קישורים
+# XP + בדיקת קישורים
 # =========================================================
 
 @bot.event
@@ -177,7 +172,7 @@ async def on_message(message):
     user_id = message.author.id
     current_time = time.time()
 
-    # XP
+    # 50 XP פעם ב-60 שניות
     if (
         user_id not in last_xp
         or current_time - last_xp[user_id] >= XP_COOLDOWN
@@ -190,7 +185,7 @@ async def on_message(message):
 
         last_xp[user_id] = current_time
 
-    # בדיקת קישור
+    # בדיקת קישורים
     url_pattern = r"(https?://\S+|www\.\S+)"
 
     if re.search(
@@ -203,7 +198,7 @@ async def on_message(message):
 
             await message.delete()
 
-            add_warning(
+            warning_number = add_warning(
                 message.author.id
             )
 
@@ -212,7 +207,8 @@ async def on_message(message):
                 await message.author.send(
                     "⚠️ **קיבלת אזהרה**\n\n"
                     "שליחת קישורים אינה מותרת בשרת.\n"
-                    "ההודעה שלך נמחקה באופן אוטומטי."
+                    "ההודעה שלך נמחקה באופן אוטומטי.\n\n"
+                    f"מספר האזהרות שלך: **{warning_number}**"
                 )
 
             except discord.Forbidden:
@@ -321,10 +317,8 @@ async def warn_command(
     reason: str
 ):
 
-    # בדיקת צוות
-    if not is_staff(
-        interaction.user
-    ):
+    # בדיקת הרשאות
+    if not is_staff(interaction.user):
 
         await interaction.response.send_message(
             "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
@@ -357,7 +351,7 @@ async def warn_command(
         member.id
     )
 
-    # הודעה פרטית למי שנתן את האזהרה
+    # הודעה פרטית לצוות
     embed = discord.Embed(
         title="⚠️ אזהרה ניתנה",
         color=discord.Color.orange()
@@ -390,7 +384,7 @@ async def warn_command(
         ephemeral=True
     )
 
-    # הודעה פרטית למשתמש שקיבל אזהרה
+    # DM למשתמש
     try:
 
         dm_embed = discord.Embed(
@@ -430,7 +424,7 @@ async def warn_command(
 
 @bot.tree.command(
     name="ticket",
-    description="פותח פאנל פתיחת טיקט"
+    description="פותח את מערכת הטיקטים"
 )
 @app_commands.guild_only()
 async def ticket_command(
@@ -442,7 +436,7 @@ async def ticket_command(
         description=(
             "צריכים עזרה?\n\n"
             "לחצו על **פתיחת טיקט** "
-            "ובחרו את סוג הפנייה שלכם."
+            "כדי לפתוח פנייה חדשה."
         ),
         color=discord.Color.blue()
     )
@@ -454,12 +448,10 @@ async def ticket_command(
 
 
 # =========================================================
-# פאנל פתיחת טיקט
+# כפתור פתיחת טיקט
 # =========================================================
 
-class TicketView(
-    discord.ui.View
-):
+class TicketView(discord.ui.View):
 
     def __init__(self):
 
@@ -490,9 +482,7 @@ class TicketView(
 # בחירת סוג טיקט
 # =========================================================
 
-class TicketTypeView(
-    discord.ui.View
-):
+class TicketTypeView(discord.ui.View):
 
     def __init__(self):
 
@@ -503,7 +493,9 @@ class TicketTypeView(
     @discord.ui.select(
         placeholder="בחר סוג טיקט...",
         custom_id="ticket_type",
+
         options=[
+
             discord.SelectOption(
                 label="באג",
                 description="דיווח על באג או תקלה בשרת",
@@ -563,7 +555,7 @@ class TicketTypeView(
 
             return
 
-        # קטגוריה
+        # מציאת קטגוריית Tickets
         category = discord.utils.get(
             guild.categories,
             name="Tickets"
@@ -599,17 +591,15 @@ class TicketTypeView(
                 )
         }
 
-        # הרשאות צוות
+        # הרשאות לצוות
         for role in guild.roles:
 
             if role.name.upper() in STAFF_ROLES:
 
-                overwrites[role] = (
-                    discord.PermissionOverwrite(
-                        view_channel=True,
-                        send_messages=True,
-                        read_message_history=True
-                    )
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
                 )
 
         # יצירת הטיקט
@@ -622,6 +612,7 @@ class TicketTypeView(
         # הודעת הטיקט
         embed = discord.Embed(
             title="🎫 טיקט חדש",
+
             description=(
                 f"**סוג הטיקט:** {ticket_type}\n\n"
                 f"**נפתח על ידי:** "
@@ -631,6 +622,7 @@ class TicketTypeView(
                 "**לקחת טיפול** כדי לקחת אחריות "
                 "על הטיקט."
             ),
+
             color=discord.Color.blue()
         )
 
@@ -648,12 +640,10 @@ class TicketTypeView(
 
 
 # =========================================================
-# כפתורי טיקט
+# כפתורי הטיקט
 # =========================================================
 
-class TicketControlView(
-    discord.ui.View
-):
+class TicketControlView(discord.ui.View):
 
     def __init__(self):
 
@@ -661,9 +651,9 @@ class TicketControlView(
             timeout=None
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # לקחת טיפול
-    # -----------------------------------------------------
+    # =====================================================
 
     @discord.ui.button(
         label="לקחת טיפול",
@@ -677,6 +667,7 @@ class TicketControlView(
         button: discord.ui.Button
     ):
 
+        # רק MOD ומעלה
         if not is_staff(
             interaction.user
         ):
@@ -688,21 +679,22 @@ class TicketControlView(
 
             return
 
+        # הודעה בצ'אט
         await interaction.response.send_message(
             f"🎫 **{interaction.user.mention} "
             f"לקח טיפול בטיקט הזה.**"
         )
 
-        # מניעת לקיחת טיפול נוספת
+        # ביטול הכפתור כדי שלא ייקחו טיפול שוב
         button.disabled = True
 
         await interaction.message.edit(
             view=self
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # סגירת טיקט
-    # -----------------------------------------------------
+    # =====================================================
 
     @discord.ui.button(
         label="סגירת טיקט",
@@ -716,6 +708,7 @@ class TicketControlView(
         button: discord.ui.Button
     ):
 
+        # רק MOD ומעלה
         if not is_staff(
             interaction.user
         ):
@@ -731,12 +724,14 @@ class TicketControlView(
             "🔒 **הטיקט ייסגר בעוד 3 שניות.**"
         )
 
-        await discord.utils.sleep_until(
-            discord.utils.utcnow()
-            + discord.timedelta(seconds=3)
-        )
+        await asyncio.sleep(3)
 
-        await interaction.channel.delete()
+        try:
+
+            await interaction.channel.delete()
+
+        except discord.NotFound:
+            pass
 
 
 # =========================================================
