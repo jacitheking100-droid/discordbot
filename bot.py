@@ -25,6 +25,9 @@ STAFF_ROLES = {
     "KING FOX"
 }
 
+SUGGESTION_INPUT_CHANNEL = "💡・הצעות-לשרת"
+SUGGESTION_OUTPUT_CHANNEL = "📋・הצעות-שהוצעו"
+
 # =========================
 # DATABASE
 # =========================
@@ -37,6 +40,26 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     xp INTEGER DEFAULT 0,
     warnings INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    message_id INTEGER,
+    channel_id INTEGER,
+    created_at INTEGER NOT NULL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS suggestion_votes (
+    suggestion_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    vote INTEGER NOT NULL,
+    PRIMARY KEY (suggestion_id, user_id)
 )
 """)
 
@@ -134,6 +157,385 @@ def is_staff(member):
         role.name.upper() in STAFF_ROLES
         for role in member.roles
     )
+
+
+# =========================
+# SUGGESTION DATABASE
+# =========================
+
+def create_suggestion(user_id, content):
+    cursor.execute(
+        """
+        INSERT INTO suggestions
+        (user_id, content, message_id, channel_id, created_at)
+        VALUES (?, ?, NULL, NULL, ?)
+        """,
+        (user_id, content, int(time.time()))
+    )
+
+    db.commit()
+
+    return cursor.lastrowid
+
+
+def set_suggestion_message(suggestion_id, message_id, channel_id):
+    cursor.execute(
+        """
+        UPDATE suggestions
+        SET message_id = ?, channel_id = ?
+        WHERE id = ?
+        """,
+        (message_id, channel_id, suggestion_id)
+    )
+
+    db.commit()
+
+
+def get_suggestion(suggestion_id):
+    cursor.execute(
+        """
+        SELECT id, user_id, content, message_id, channel_id
+        FROM suggestions
+        WHERE id = ?
+        """,
+        (suggestion_id,)
+    )
+
+    return cursor.fetchone()
+
+
+def get_vote_counts(suggestion_id):
+    cursor.execute(
+        """
+        SELECT
+            SUM(CASE WHEN vote = 1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN vote = -1 THEN 1 ELSE 0 END)
+        FROM suggestion_votes
+        WHERE suggestion_id = ?
+        """,
+        (suggestion_id,)
+    )
+
+    result = cursor.fetchone()
+
+    likes = result[0] or 0
+    dislikes = result[1] or 0
+
+    return likes, dislikes
+
+
+def get_user_vote(suggestion_id, user_id):
+    cursor.execute(
+        """
+        SELECT vote
+        FROM suggestion_votes
+        WHERE suggestion_id = ? AND user_id = ?
+        """,
+        (suggestion_id, user_id)
+    )
+
+    result = cursor.fetchone()
+
+    return result[0] if result else None
+
+
+def set_vote(suggestion_id, user_id, vote):
+    current_vote = get_user_vote(
+        suggestion_id,
+        user_id
+    )
+
+    # אם לחץ שוב על אותו כפתור - מבטל את ההצבעה
+    if current_vote == vote:
+
+        cursor.execute(
+            """
+            DELETE FROM suggestion_votes
+            WHERE suggestion_id = ? AND user_id = ?
+            """,
+            (suggestion_id, user_id)
+        )
+
+    else:
+
+        cursor.execute(
+            """
+            INSERT INTO suggestion_votes
+            (suggestion_id, user_id, vote)
+            VALUES (?, ?, ?)
+            ON CONFLICT(suggestion_id, user_id)
+            DO UPDATE SET vote = excluded.vote
+            """,
+            (suggestion_id, user_id, vote)
+        )
+
+    db.commit()
+
+
+# =========================
+# SUGGESTION EMBED
+# =========================
+
+async def build_suggestion_embed(
+    suggestion_id,
+    guild
+):
+
+    suggestion = get_suggestion(
+        suggestion_id
+    )
+
+    if not suggestion:
+        return None
+
+    _, user_id, content, _, _ = suggestion
+
+    member = guild.get_member(user_id)
+
+    if member:
+        author_name = member.display_name
+        author_mention = member.mention
+        avatar_url = member.display_avatar.url
+    else:
+        author_name = "משתמש"
+        author_mention = f"<@{user_id}>"
+        avatar_url = None
+
+    likes, dislikes = get_vote_counts(
+        suggestion_id
+    )
+
+    embed = discord.Embed(
+        title="💡 הצעה חדשה",
+        description=content,
+        color=discord.Color.blue()
+    )
+
+    embed.add_field(
+        name="👤 הוצע על ידי",
+        value=f"{author_mention}\n`{author_name}`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 הצבעות",
+        value=(
+            f"👍 **{likes}** לייקים\n"
+            f"👎 **{dislikes}** דיסלייקים"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(
+        text=f"Foxes • הצעה #{suggestion_id}"
+    )
+
+    if avatar_url:
+        embed.set_thumbnail(
+            url=avatar_url
+        )
+
+    return embed
+
+
+# =========================
+# SUGGESTION VOTE VIEW
+# =========================
+
+class SuggestionVoteView(discord.ui.View):
+
+    def __init__(self, suggestion_id):
+        super().__init__(timeout=None)
+
+        self.suggestion_id = suggestion_id
+
+        self.like_button.custom_id = (
+            f"suggestion_like_{suggestion_id}"
+        )
+
+        self.dislike_button.custom_id = (
+            f"suggestion_dislike_{suggestion_id}"
+        )
+
+    @discord.ui.button(
+        label="לייק",
+        emoji="👍",
+        style=discord.ButtonStyle.success
+    )
+    async def like_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        suggestion = get_suggestion(
+            self.suggestion_id
+        )
+
+        if not suggestion:
+
+            await interaction.response.send_message(
+                "❌ ההצעה לא נמצאה.",
+                ephemeral=True
+            )
+
+            return
+
+        set_vote(
+            self.suggestion_id,
+            interaction.user.id,
+            1
+        )
+
+        embed = await build_suggestion_embed(
+            self.suggestion_id,
+            interaction.guild
+        )
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self
+        )
+
+    @discord.ui.button(
+        label="דיסלייק",
+        emoji="👎",
+        style=discord.ButtonStyle.danger
+    )
+    async def dislike_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        suggestion = get_suggestion(
+            self.suggestion_id
+        )
+
+        if not suggestion:
+
+            await interaction.response.send_message(
+                "❌ ההצעה לא נמצאה.",
+                ephemeral=True
+            )
+
+            return
+
+        set_vote(
+            self.suggestion_id,
+            interaction.user.id,
+            -1
+        )
+
+        embed = await build_suggestion_embed(
+            self.suggestion_id,
+            interaction.guild
+        )
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self
+        )
+
+
+# =========================
+# SUGGESTION MODAL
+# =========================
+
+class SuggestionModal(discord.ui.Modal):
+
+    def __init__(self):
+        super().__init__(
+            title="💡 הצעה לשרת"
+        )
+
+        self.suggestion = discord.ui.TextInput(
+            label="מה ההצעה שלך?",
+            placeholder="כתוב כאן את ההצעה שלך לשרת...",
+            style=discord.TextStyle.paragraph,
+            min_length=3,
+            max_length=1000,
+            required=True
+        )
+
+        self.add_item(
+            self.suggestion
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        guild = interaction.guild
+
+        channel = discord.utils.get(
+            guild.text_channels,
+            name=SUGGESTION_OUTPUT_CHANNEL
+        )
+
+        if channel is None:
+
+            await interaction.response.send_message(
+                f"❌ לא נמצא החדר `{SUGGESTION_OUTPUT_CHANNEL}`.",
+                ephemeral=True
+            )
+
+            return
+
+        suggestion_id = create_suggestion(
+            interaction.user.id,
+            self.suggestion.value
+        )
+
+        embed = await build_suggestion_embed(
+            suggestion_id,
+            guild
+        )
+
+        message = await channel.send(
+            embed=embed,
+            view=SuggestionVoteView(
+                suggestion_id
+            )
+        )
+
+        set_suggestion_message(
+            suggestion_id,
+            message.id,
+            channel.id
+        )
+
+        await interaction.response.send_message(
+            "✅ ההצעה שלך נשלחה בהצלחה!",
+            ephemeral=True
+        )
+
+
+# =========================
+# SUGGESTION PANEL
+# =========================
+
+class SuggestionPanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="הצעה לשרת",
+        emoji="💡",
+        style=discord.ButtonStyle.primary,
+        custom_id="open_suggestion"
+    )
+    async def open_suggestion(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        await interaction.response.send_modal(
+            SuggestionModal()
+        )
 
 
 # =========================
@@ -527,6 +929,46 @@ async def ticket_command(
     )
 
 
+@bot.tree.command(
+    name="suggestions",
+    description="שליחת פאנל הצעות לשרת"
+)
+async def suggestions_command(
+    interaction: discord.Interaction
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול לשלוח את פאנל ההצעות.",
+            ephemeral=True
+        )
+
+        return
+
+    embed = discord.Embed(
+        title="💡 הצעות לשרת",
+        description=(
+            "יש לכם רעיון שיכול לשפר את **Foxes**?\n\n"
+            "לחצו על הכפתור למטה וכתבו את ההצעה שלכם.\n\n"
+            "ההצעה תישלח לחדר ההצעות, "
+            "ושאר חברי השרת יוכלו להצביע עליה.\n\n"
+            "👍 **לייק** — בעד ההצעה\n"
+            "👎 **דיסלייק** — נגד ההצעה"
+        ),
+        color=discord.Color.blue()
+    )
+
+    embed.set_footer(
+        text="Foxes • מערכת ההצעות"
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=SuggestionPanelView()
+    )
+
+
 # =========================
 # XP + LINK SYSTEM
 # =========================
@@ -583,6 +1025,8 @@ async def on_message(message):
         return
 
     await bot.process_commands(message)
+
+
 # =========================
 # WELCOME SYSTEM
 # =========================
@@ -590,9 +1034,12 @@ async def on_message(message):
 @bot.event
 async def on_member_join(member):
 
-    # מחפש חדר בשם welcome או ברוכים-באים
     channel = discord.utils.find(
-        lambda c: c.name.lower() in ["welcome", "👋・ברוכים-הבאים", "ברוכים-באים"],
+        lambda c: c.name.lower() in [
+            "welcome",
+            "👋・ברוכים-הבאים",
+            "ברוכים-באים"
+        ],
         member.guild.text_channels
     )
 
@@ -611,10 +1058,10 @@ async def on_member_join(member):
         color=discord.Color.blue()
     )
 
-    # תמונת הפרופיל של המשתמש
-    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_thumbnail(
+        url=member.display_avatar.url
+    )
 
-    # שם המשתמש
     embed.set_footer(
         text=f"ברוך הבא, {member.name} • Foxes"
     )
@@ -622,6 +1069,7 @@ async def on_member_join(member):
     await channel.send(
         embed=embed
     )
+
 
 # =========================
 # STARTUP
@@ -633,6 +1081,23 @@ async def setup_hook():
     # טוען את הכפתורים
     bot.add_view(TicketView())
     bot.add_view(TicketControlView())
+    bot.add_view(SuggestionPanelView())
+
+    # טוען מחדש את כפתורי ההצבעה של ההצעות הקיימות
+    cursor.execute(
+        """
+        SELECT id
+        FROM suggestions
+        WHERE message_id IS NOT NULL
+        """
+    )
+
+    suggestions = cursor.fetchall()
+
+    for row in suggestions:
+        bot.add_view(
+            SuggestionVoteView(row[0])
+        )
 
     # מוחק פקודות ישנות מהשרת
     bot.tree.clear_commands(
