@@ -7,13 +7,15 @@ import time
 import re
 import asyncio
 
-
-# =========================================================
+# =========================
 # הגדרות
-# =========================================================
+# =========================
 
 XP_PER_MESSAGE = 50
 XP_COOLDOWN = 60
+
+GUILD_ID = 1552344386526908488
+GUILD = discord.Object(id=GUILD_ID)
 
 STAFF_ROLES = {
     "MOD",
@@ -23,14 +25,11 @@ STAFF_ROLES = {
     "KING FOX"
 }
 
-DATABASE = "bot_data.db"
-
-
-# =========================================================
+# =========================
 # Database
-# =========================================================
+# =========================
 
-db = sqlite3.connect(DATABASE)
+db = sqlite3.connect("bot_data.db")
 cursor = db.cursor()
 
 cursor.execute("""
@@ -43,10 +42,9 @@ CREATE TABLE IF NOT EXISTS users (
 
 db.commit()
 
-
-# =========================================================
-# Bot
-# =========================================================
+# =========================
+# Intents
+# =========================
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -61,10 +59,9 @@ bot = commands.Bot(
 
 last_xp = {}
 
-
-# =========================================================
-# פונקציות
-# =========================================================
+# =========================
+# Database Functions
+# =========================
 
 def ensure_user(user_id):
     cursor.execute(
@@ -83,7 +80,6 @@ def get_xp(user_id):
     )
 
     result = cursor.fetchone()
-
     return result[0] if result else 0
 
 
@@ -96,7 +92,6 @@ def get_warnings(user_id):
     )
 
     result = cursor.fetchone()
-
     return result[0] if result else 0
 
 
@@ -124,6 +119,10 @@ def add_warning(user_id):
     return get_warnings(user_id)
 
 
+# =========================
+# Staff Check
+# =========================
+
 def is_staff(member):
     if not isinstance(member, discord.Member):
         return False
@@ -134,162 +133,282 @@ def is_staff(member):
     )
 
 
-# =========================================================
-# התחברות
-# =========================================================
+# =========================
+# Ticket Panel
+# =========================
 
-@bot.event
-async def on_ready():
+class TicketView(discord.ui.View):
 
-    try:
-        synced = await bot.tree.sync()
+    def __init__(self):
+        super().__init__(timeout=None)
 
-        print(
-            f"סונכרנו {len(synced)} פקודות Slash."
-        )
-
-    except Exception as e:
-
-        print(
-            f"שגיאה בסנכרון פקודות: {e}"
-        )
-
-    print(
-        f"הבוט מחובר בתור {bot.user}"
+    @discord.ui.button(
+        label="פתיחת טיקט",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+        custom_id="open_ticket"
     )
-
-
-# =========================================================
-# XP + בדיקת קישורים
-# =========================================================
-
-@bot.event
-async def on_message(message):
-
-    if message.author.bot:
-        return
-
-    user_id = message.author.id
-    current_time = time.time()
-
-    # 50 XP פעם ב-60 שניות
-    if (
-        user_id not in last_xp
-        or current_time - last_xp[user_id] >= XP_COOLDOWN
+    async def open_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
     ):
 
-        add_xp(
-            user_id,
-            XP_PER_MESSAGE
+        await interaction.response.send_message(
+            "בחר את סוג הפנייה שלך:",
+            view=TicketTypeView(),
+            ephemeral=True
         )
 
-        last_xp[user_id] = current_time
 
-    # בדיקת קישורים
-    url_pattern = r"(https?://\S+|www\.\S+)"
+# =========================
+# Ticket Type
+# =========================
 
-    if re.search(
-        url_pattern,
-        message.content,
-        re.IGNORECASE
+class TicketTypeView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.select(
+        placeholder="בחר סוג פנייה...",
+        options=[
+            discord.SelectOption(
+                label="באג",
+                description="דיווח על תקלה או באג",
+                emoji="🐛",
+                value="bug"
+            ),
+            discord.SelectOption(
+                label="התקבלות לצוות",
+                description="בקשה להצטרף לצוות השרת",
+                emoji="👮",
+                value="staff"
+            ),
+            discord.SelectOption(
+                label="דיווח על משתמש",
+                description="דיווח על משתמש שעובר על חוקי השרת",
+                emoji="🚨",
+                value="report"
+            )
+        ]
+    )
+    async def ticket_type(
+        self,
+        interaction: discord.Interaction,
+        select: discord.ui.Select
     ):
 
-        try:
+        guild = interaction.guild
+        user = interaction.user
 
-            await message.delete()
+        existing_channel = discord.utils.get(
+            guild.text_channels,
+            name=f"ticket-{user.id}"
+        )
 
-            warning_number = add_warning(
-                message.author.id
+        if existing_channel:
+
+            await interaction.response.send_message(
+                f"❌ כבר יש לך טיקט פתוח: {existing_channel.mention}",
+                ephemeral=True
             )
 
-            try:
+            return
 
-                await message.author.send(
-                    "⚠️ **קיבלת אזהרה**\n\n"
-                    "שליחת קישורים אינה מותרת בשרת.\n"
-                    "ההודעה שלך נמחקה באופן אוטומטי.\n\n"
-                    f"מספר האזהרות שלך: **{warning_number}**"
+        category = discord.utils.get(
+            guild.categories,
+            name="Tickets"
+        )
+
+        if category is None:
+
+            category = await guild.create_category("Tickets")
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+
+            user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True
+            )
+        }
+
+        for role in guild.roles:
+
+            if role.name.upper() in STAFF_ROLES:
+
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
                 )
 
-            except discord.Forbidden:
-                pass
+        channel = await guild.create_text_channel(
+            name=f"ticket-{user.id}",
+            category=category,
+            overwrites=overwrites
+        )
 
-        except discord.Forbidden:
-            pass
+        ticket_names = {
+            "bug": "🐛 באג",
+            "staff": "👮 התקבלות לצוות",
+            "report": "🚨 דיווח על משתמש"
+        }
 
-        except Exception as e:
+        ticket_name = ticket_names.get(
+            select.values[0],
+            "פנייה"
+        )
 
-            print(
-                f"שגיאה בטיפול בקישור: {e}"
+        embed = discord.Embed(
+            title="🎫 טיקט חדש",
+            description=(
+                f"שלום {user.mention}\n\n"
+                f"**סוג הפנייה:** {ticket_name}\n\n"
+                "צוות השרת יטפל בפנייה בהקדם האפשרי.\n"
+                "אין צורך לתייג את הצוות ללא צורך."
+            ),
+            color=discord.Color.blue()
+        )
+
+        embed.set_footer(
+            text="מערכת הטיקטים"
+        )
+
+        await channel.send(
+            embed=embed,
+            view=TicketControlView()
+        )
+
+        await interaction.response.send_message(
+            f"✅ הטיקט נפתח בהצלחה: {channel.mention}",
+            ephemeral=True
+        )
+
+
+# =========================
+# Ticket Controls
+# =========================
+
+class TicketControlView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="לקחת טיפול",
+        emoji="👤",
+        style=discord.ButtonStyle.success,
+        custom_id="claim_ticket"
+    )
+    async def claim_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if not is_staff(interaction.user):
+
+            await interaction.response.send_message(
+                "❌ רק צוות יכול לקחת טיפול בטיקט.",
+                ephemeral=True
             )
 
-        return
+            return
 
-    await bot.process_commands(message)
+        button.disabled = True
+
+        await interaction.response.edit_message(
+            view=self
+        )
+
+        await interaction.followup.send(
+            f"👤 **{interaction.user.mention} לקח טיפול בטיקט הזה.**"
+        )
 
 
-# =========================================================
-# /xp
-# =========================================================
+    @discord.ui.button(
+        label="סגירת טיקט",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="close_ticket"
+    )
+    async def close_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if not is_staff(interaction.user):
+
+            await interaction.response.send_message(
+                "❌ רק צוות יכול לסגור טיקט.",
+                ephemeral=True
+            )
+
+            return
+
+        await interaction.response.send_message(
+            "🔒 **הטיקט ייסגר בעוד 3 שניות.**"
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await interaction.channel.delete()
+        except:
+            pass
+
+
+# =========================
+# Slash Commands
+# =========================
 
 @bot.tree.command(
     name="xp",
-    description="מציג את כמות ה-XP האישית שלך"
+    description="בדיקת כמות ה-XP שלך",
+    guild=GUILD
 )
-@app_commands.guild_only()
-async def xp_command(
-    interaction: discord.Interaction
-):
+async def xp_command(interaction: discord.Interaction):
 
-    xp = get_xp(
-        interaction.user.id
-    )
+    xp = get_xp(interaction.user.id)
 
     embed = discord.Embed(
-        title="📊 ה־XP שלך",
-        description=(
-            f"יש לך כרגע **{xp} XP**."
-        ),
+        title="📊 ה-XP שלך",
+        description=f"יש לך כרגע **{xp} XP**.",
         color=discord.Color.blue()
     )
 
-    embed.set_footer(
-        text="המידע הזה גלוי רק לך."
-    )
-
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True
     )
 
-
-# =========================================================
-# /warnings
-# =========================================================
 
 @bot.tree.command(
     name="warnings",
-    description="מציג את מספר האזהרות האישיות שלך"
+    description="בדיקת מספר האזהרות שלך",
+    guild=GUILD
 )
-@app_commands.guild_only()
-async def warnings_command(
-    interaction: discord.Interaction
-):
+async def warnings_command(interaction: discord.Interaction):
 
-    warnings = get_warnings(
-        interaction.user.id
-    )
+    warnings = get_warnings(interaction.user.id)
 
     embed = discord.Embed(
         title="⚠️ האזהרות שלך",
-        description=(
-            f"יש לך כרגע **{warnings} אזהרות**."
-        ),
+        description=f"יש לך כרגע **{warnings} אזהרות**.",
         color=discord.Color.orange()
-    )
-
-    embed.set_footer(
-        text="המידע הזה גלוי רק לך."
     )
 
     await interaction.response.send_message(
@@ -298,26 +417,21 @@ async def warnings_command(
     )
 
 
-# =========================================================
-# /warn
-# =========================================================
-
 @bot.tree.command(
     name="warn",
-    description="נותן אזהרה למשתמש"
+    description="מתן אזהרה למשתמש",
+    guild=GUILD
 )
 @app_commands.describe(
     member="המשתמש שיקבל את האזהרה",
-    reason="הסיבה לאזהרה"
+    reason="סיבת האזהרה"
 )
-@app_commands.guild_only()
 async def warn_command(
     interaction: discord.Interaction,
     member: discord.Member,
     reason: str
 ):
 
-    # בדיקת הרשאות
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
@@ -327,34 +441,11 @@ async def warn_command(
 
         return
 
-    # אי אפשר להזהיר בוט
-    if member.bot:
+    warnings = add_warning(member.id)
 
-        await interaction.response.send_message(
-            "❌ אי אפשר לתת אזהרה לבוט.",
-            ephemeral=True
-        )
-
-        return
-
-    # אי אפשר להזהיר את עצמך
-    if member.id == interaction.user.id:
-
-        await interaction.response.send_message(
-            "❌ אי אפשר לתת אזהרה לעצמך.",
-            ephemeral=True
-        )
-
-        return
-
-    warning_number = add_warning(
-        member.id
-    )
-
-    # הודעה פרטית לצוות
     embed = discord.Embed(
         title="⚠️ אזהרה ניתנה",
-        color=discord.Color.orange()
+        color=discord.Color.red()
     )
 
     embed.add_field(
@@ -371,12 +462,8 @@ async def warn_command(
 
     embed.add_field(
         name="מספר אזהרות",
-        value=str(warning_number),
+        value=str(warnings),
         inline=False
-    )
-
-    embed.set_footer(
-        text="ההודעה הזאת גלויה רק לך."
     )
 
     await interaction.response.send_message(
@@ -384,61 +471,59 @@ async def warn_command(
         ephemeral=True
     )
 
-    # DM למשתמש
     try:
 
-        dm_embed = discord.Embed(
-            title="⚠️ קיבלת אזהרה",
-            color=discord.Color.orange()
-        )
-
-        dm_embed.add_field(
-            name="שרת",
-            value=interaction.guild.name,
-            inline=False
-        )
-
-        dm_embed.add_field(
-            name="סיבה",
-            value=reason,
-            inline=False
-        )
-
-        dm_embed.add_field(
-            name="מספר אזהרות",
-            value=str(warning_number),
-            inline=False
-        )
-
         await member.send(
-            embed=dm_embed
+            f"""⚠️ **קיבלת אזהרה**
+
+שרת: **{interaction.guild.name}**
+
+סיבה:
+{reason}
+
+מספר האזהרות שלך: **{warnings}**"""
         )
 
-    except discord.Forbidden:
+    except:
         pass
 
 
-# =========================================================
-# /ticket
-# =========================================================
-
 @bot.tree.command(
     name="ticket",
-    description="פותח את מערכת הטיקטים"
+    description="שליחת פאנל פתיחת טיקט",
+    guild=GUILD
 )
-@app_commands.guild_only()
 async def ticket_command(
     interaction: discord.Interaction
 ):
 
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול לשלוח את פאנל הטיקטים.",
+            ephemeral=True
+        )
+
+        return
+
     embed = discord.Embed(
-        title="🎫 מערכת טיקטים",
+        title="🎫 מערכת הטיקטים",
         description=(
-            "צריכים עזרה?\n\n"
-            "לחצו על **פתיחת טיקט** "
-            "כדי לפתוח פנייה חדשה."
+            "ברוכים הבאים למערכת התמיכה.\n\n"
+            "כדי לפתוח טיקט, לחצו על הכפתור "
+            "**פתיחת טיקט** ובחרו את סוג הפנייה שלכם.\n\n"
+            "🐛 **באג**\n"
+            "דיווח על תקלה או בעיה.\n\n"
+            "👮 **התקבלות לצוות**\n"
+            "בקשה להצטרף לצוות השרת.\n\n"
+            "🚨 **דיווח על משתמש**\n"
+            "דיווח על משתמש שעובר על חוקי השרת."
         ),
         color=discord.Color.blue()
+    )
+
+    embed.set_footer(
+        text="מערכת הטיקטים • צוות השרת"
     )
 
     await interaction.response.send_message(
@@ -447,297 +532,108 @@ async def ticket_command(
     )
 
 
-# =========================================================
-# כפתור פתיחת טיקט
-# =========================================================
+# =========================
+# XP + Links
+# =========================
 
-class TicketView(discord.ui.View):
+@bot.event
+async def on_message(message):
 
-    def __init__(self):
+    if message.author.bot:
+        return
 
-        super().__init__(
-            timeout=None
-        )
+    user_id = message.author.id
+    now = time.time()
 
-    @discord.ui.button(
-        label="פתיחת טיקט",
-        style=discord.ButtonStyle.primary,
-        emoji="🎫",
-        custom_id="open_ticket"
-    )
-    async def open_ticket(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+    if (
+        user_id not in last_xp
+        or now - last_xp[user_id] >= XP_COOLDOWN
+    ):
+        add_xp(user_id, XP_PER_MESSAGE)
+        last_xp[user_id] = now
+
+    link_pattern = r"(https?://\S+|www\.\S+)"
+
+    if re.search(
+        link_pattern,
+        message.content,
+        re.IGNORECASE
     ):
 
-        await interaction.response.send_message(
-            "🎫 **בחר את סוג הטיקט:**",
-            view=TicketTypeView(),
-            ephemeral=True
-        )
+        try:
+            await message.delete()
+        except:
+            pass
 
-
-# =========================================================
-# בחירת סוג טיקט
-# =========================================================
-
-class TicketTypeView(discord.ui.View):
-
-    def __init__(self):
-
-        super().__init__(
-            timeout=60
-        )
-
-    @discord.ui.select(
-        placeholder="בחר סוג טיקט...",
-        custom_id="ticket_type",
-
-        options=[
-
-            discord.SelectOption(
-                label="באג",
-                description="דיווח על באג או תקלה בשרת",
-                emoji="🐛",
-                value="bug"
-            ),
-
-            discord.SelectOption(
-                label="התקבלות לצוות",
-                description="בקשה להצטרפות לצוות השרת",
-                emoji="👮",
-                value="staff"
-            ),
-
-            discord.SelectOption(
-                label="דיווח על משתמש",
-                description="דיווח על משתמש שעבר על חוקי השרת",
-                emoji="🚨",
-                value="report"
-            )
-        ]
-    )
-    async def select_ticket(
-        self,
-        interaction: discord.Interaction,
-        select: discord.ui.Select
-    ):
-
-        ticket_types = {
-
-            "bug": "באג",
-
-            "staff": "התקבלות לצוות",
-
-            "report": "דיווח על משתמש"
-        }
-
-        ticket_type = ticket_types[
-            select.values[0]
-        ]
-
-        guild = interaction.guild
-
-        # בדיקה אם כבר יש טיקט
-        existing_channel = discord.utils.get(
-            guild.text_channels,
-            name=f"ticket-{interaction.user.id}"
-        )
-
-        if existing_channel:
-
-            await interaction.response.send_message(
-                f"❌ כבר יש לך טיקט פתוח: "
-                f"{existing_channel.mention}",
-                ephemeral=True
-            )
-
-            return
-
-        # מציאת קטגוריית Tickets
-        category = discord.utils.get(
-            guild.categories,
-            name="Tickets"
-        )
-
-        if category is None:
-
-            category = await guild.create_category(
-                "Tickets"
-            )
-
-        # הרשאות
-        overwrites = {
-
-            guild.default_role:
-                discord.PermissionOverwrite(
-                    view_channel=False
-                ),
-
-            interaction.user:
-                discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True
-                ),
-
-            guild.me:
-                discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    manage_channels=True
-                )
-        }
-
-        # הרשאות לצוות
-        for role in guild.roles:
-
-            if role.name.upper() in STAFF_ROLES:
-
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True
-                )
-
-        # יצירת הטיקט
-        channel = await guild.create_text_channel(
-            f"ticket-{interaction.user.id}",
-            category=category,
-            overwrites=overwrites
-        )
-
-        # הודעת הטיקט
-        embed = discord.Embed(
-            title="🎫 טיקט חדש",
-
-            description=(
-                f"**סוג הטיקט:** {ticket_type}\n\n"
-                f"**נפתח על ידי:** "
-                f"{interaction.user.mention}\n\n"
-                "צוות השרת יטפל בפנייה בהקדם.\n\n"
-                "איש צוות יכול ללחוץ על "
-                "**לקחת טיפול** כדי לקחת אחריות "
-                "על הטיקט."
-            ),
-
-            color=discord.Color.blue()
-        )
-
-        await channel.send(
-            content=interaction.user.mention,
-            embed=embed,
-            view=TicketControlView()
-        )
-
-        await interaction.response.send_message(
-            f"✅ הטיקט שלך נפתח: "
-            f"{channel.mention}",
-            ephemeral=True
-        )
-
-
-# =========================================================
-# כפתורי הטיקט
-# =========================================================
-
-class TicketControlView(discord.ui.View):
-
-    def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
-
-    # =====================================================
-    # לקחת טיפול
-    # =====================================================
-
-    @discord.ui.button(
-        label="לקחת טיפול",
-        style=discord.ButtonStyle.success,
-        emoji="👤",
-        custom_id="take_ticket"
-    )
-    async def take_ticket(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        # רק MOD ומעלה
-        if not is_staff(
-            interaction.user
-        ):
-
-            await interaction.response.send_message(
-                "❌ רק MOD ומעלה יכולים לקחת טיפול בטיקט.",
-                ephemeral=True
-            )
-
-            return
-
-        # הודעה בצ'אט
-        await interaction.response.send_message(
-            f"🎫 **{interaction.user.mention} "
-            f"לקח טיפול בטיקט הזה.**"
-        )
-
-        # ביטול הכפתור כדי שלא ייקחו טיפול שוב
-        button.disabled = True
-
-        await interaction.message.edit(
-            view=self
-        )
-
-    # =====================================================
-    # סגירת טיקט
-    # =====================================================
-
-    @discord.ui.button(
-        label="סגירת טיקט",
-        style=discord.ButtonStyle.danger,
-        emoji="🔒",
-        custom_id="close_ticket"
-    )
-    async def close_ticket(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        # רק MOD ומעלה
-        if not is_staff(
-            interaction.user
-        ):
-
-            await interaction.response.send_message(
-                "❌ רק MOD ומעלה יכולים לסגור טיקט.",
-                ephemeral=True
-            )
-
-            return
-
-        await interaction.response.send_message(
-            "🔒 **הטיקט ייסגר בעוד 3 שניות.**"
-        )
-
-        await asyncio.sleep(3)
+        warnings = add_warning(user_id)
 
         try:
 
-            await interaction.channel.delete()
+            await message.author.send(
+                f"""⚠️ **אזהרה**
 
-        except discord.NotFound:
+הודעה שלך נמחקה מכיוון שהיא הכילה קישור.
+
+מספר האזהרות שלך: **{warnings}**
+
+נא להקפיד על חוקי השרת."""
+            )
+
+        except:
             pass
 
+        return
 
-# =========================================================
-# הפעלת הבוט
-# =========================================================
+    await bot.process_commands(message)
 
-TOKEN = os.environ["DISCORD_TOKEN"]
+
+# =========================
+# Startup
+# =========================
+
+@bot.event
+async def setup_hook():
+
+    bot.add_view(TicketView())
+    bot.add_view(TicketControlView())
+
+    try:
+
+        synced = await bot.tree.sync(
+            guild=GUILD
+        )
+
+        print(
+            f"סונכרנו {len(synced)} פקודות Slash לשרת"
+        )
+
+        for command in synced:
+            print(f"/{command.name}")
+
+    except Exception as e:
+
+        print(
+            f"שגיאה בסנכרון פקודות: {e}"
+        )
+
+
+@bot.event
+async def on_ready():
+
+    print("--------------------------------")
+    print(f"הבוט מחובר בתור {bot.user}")
+    print("--------------------------------")
+
+
+# =========================
+# Run
+# =========================
+
+TOKEN = os.environ.get("DISCORD_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "DISCORD_TOKEN לא מוגדר ב-Railway"
+    )
 
 bot.run(TOKEN)
