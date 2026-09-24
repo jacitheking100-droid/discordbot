@@ -17,6 +17,12 @@ XP_COOLDOWN = 60
 GUILD_ID = 1552344386526908488
 GUILD = discord.Object(id=GUILD_ID)
 
+WELCOME_CHANNEL_NAME = "ברוכים-הבאים-👋"
+RULES_CHANNEL_NAME = "📜・חוקים"
+
+UPDATES_ROLE_NAME = "🔔・עדכונים"
+GIVEAWAYS_ROLE_NAME = "🎉・הגרלות"
+
 STAFF_ROLES = {
     "MOD",
     "SERVER STAFF",
@@ -60,18 +66,50 @@ bot = commands.Bot(
 last_xp = {}
 
 # =========================
+# HELPERS
+# =========================
+
+def get_role(guild, role_name):
+    return discord.utils.get(
+        guild.roles,
+        name=role_name
+    )
+
+
+def get_channel(guild, channel_name):
+    return discord.utils.get(
+        guild.text_channels,
+        name=channel_name
+    )
+
+
+def is_staff(member):
+
+    if not isinstance(member, discord.Member):
+        return False
+
+    return any(
+        role.name.upper() in STAFF_ROLES
+        for role in member.roles
+    )
+
+
+# =========================
 # DATABASE FUNCTIONS
 # =========================
 
 def ensure_user(user_id):
+
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, xp, warnings) VALUES (?, 0, 0)",
         (user_id,)
     )
+
     db.commit()
 
 
 def get_xp(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -85,6 +123,7 @@ def get_xp(user_id):
 
 
 def get_warnings(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -98,6 +137,7 @@ def get_warnings(user_id):
 
 
 def add_xp(user_id, amount):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -109,6 +149,7 @@ def add_xp(user_id, amount):
 
 
 def add_warning(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
@@ -122,18 +163,285 @@ def add_warning(user_id):
 
 
 # =========================
-# STAFF
+# ROLE SELECTION
 # =========================
 
-def is_staff(member):
+class RoleSelectionView(discord.ui.View):
 
-    if not isinstance(member, discord.Member):
-        return False
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    return any(
-        role.name.upper() in STAFF_ROLES
-        for role in member.roles
+    async def toggle_role(
+        self,
+        interaction: discord.Interaction,
+        role_name: str,
+        display_name: str
+    ):
+
+        guild = interaction.guild
+
+        if guild is None:
+            await interaction.response.send_message(
+                "❌ לא ניתן להשתמש בזה כאן.",
+                ephemeral=True
+            )
+            return
+
+        role = get_role(guild, role_name)
+
+        if role is None:
+            await interaction.response.send_message(
+                f"❌ הרול `{role_name}` לא נמצא בשרת.",
+                ephemeral=True
+            )
+            return
+
+        me = guild.me
+
+        if me and role >= me.top_role:
+            await interaction.response.send_message(
+                f"❌ הבוט לא יכול לנהל את הרול **{role.name}**.\n"
+                f"שים את הרול של הבוט מעל הרול הזה.",
+                ephemeral=True
+            )
+            return
+
+        try:
+
+            if role in interaction.user.roles:
+
+                await interaction.user.remove_roles(
+                    role,
+                    reason="Role selection"
+                )
+
+                await interaction.response.send_message(
+                    f"🔕 הרול **{display_name}** הוסר ממך.",
+                    ephemeral=True
+                )
+
+            else:
+
+                await interaction.user.add_roles(
+                    role,
+                    reason="Role selection"
+                )
+
+                await interaction.response.send_message(
+                    f"🔔 קיבלת את הרול **{display_name}**!",
+                    ephemeral=True
+                )
+
+        except discord.Forbidden:
+
+            await interaction.response.send_message(
+                "❌ לבוט אין הרשאה לנהל את הרול הזה.",
+                ephemeral=True
+            )
+
+        except discord.HTTPException:
+
+            await interaction.response.send_message(
+                "❌ אירעה שגיאה בזמן שינוי הרול.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(
+        label="עדכונים",
+        emoji="🔔",
+        style=discord.ButtonStyle.primary,
+        custom_id="role_updates_toggle"
     )
+    async def updates_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        await self.toggle_role(
+            interaction,
+            UPDATES_ROLE_NAME,
+            "עדכונים"
+        )
+
+    @discord.ui.button(
+        label="הגרלות",
+        emoji="🎉",
+        style=discord.ButtonStyle.success,
+        custom_id="role_giveaways_toggle"
+    )
+    async def giveaways_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        await self.toggle_role(
+            interaction,
+            GIVEAWAYS_ROLE_NAME,
+            "הגרלות"
+        )
+
+
+# =========================
+# WELCOME PANEL
+# =========================
+
+def create_role_panel_embed(guild):
+
+    rules_channel = get_channel(
+        guild,
+        RULES_CHANNEL_NAME
+    )
+
+    rules_text = (
+        rules_channel.mention
+        if rules_channel
+        else f"#{RULES_CHANNEL_NAME}"
+    )
+
+    embed = discord.Embed(
+        title="🎛️ פאנל חברים",
+        description=(
+            "**בחרו את ההתראות שתרצו לקבל:**\n\n"
+            "🔔 **עדכונים**\n"
+            "קבלת התראות ועדכונים חשובים מהשרת.\n\n"
+            "🎉 **הגרלות**\n"
+            "קבלת התראות כאשר מתחילות הגרלות חדשות.\n\n"
+            "💡 ניתן לבחור את שניהם או רק אחד מהם.\n"
+            "לחיצה נוספת על כפתור שכבר בחרתם תסיר את הרול.\n\n"
+            f"📜 לפני שמתחילים, עברו על החוקים: {rules_text}"
+        ),
+        color=discord.Color.blue()
+    )
+
+    embed.set_footer(
+        text="Foxes • Role Selection"
+    )
+
+    return embed
+
+
+async def send_role_panel(guild):
+
+    channel = get_channel(
+        guild,
+        WELCOME_CHANNEL_NAME
+    )
+
+    if channel is None:
+        print(
+            f"[WELCOME] החדר '{WELCOME_CHANNEL_NAME}' לא נמצא."
+        )
+        return
+
+    try:
+
+        await channel.send(
+            embed=create_role_panel_embed(guild),
+            view=RoleSelectionView()
+        )
+
+        print("[WELCOME] פאנל הרולים נשלח.")
+
+    except discord.Forbidden:
+
+        print(
+            "[WELCOME] אין לבוט הרשאה לשלוח הודעה בחדר."
+        )
+
+    except discord.HTTPException as e:
+
+        print(
+            f"[WELCOME] שגיאה בשליחת פאנל: {e}"
+        )
+
+
+# =========================
+# WELCOME SYSTEM
+# =========================
+
+@bot.event
+async def on_member_join(member):
+
+    print(
+        f"[WELCOME] משתמש נכנס: {member} ({member.id})"
+    )
+
+    # Anti-raid basic log
+    print(
+        f"[WELCOME] מספר חברים בשרת: {member.guild.member_count}"
+    )
+
+    channel = get_channel(
+        member.guild,
+        WELCOME_CHANNEL_NAME
+    )
+
+    if channel is None:
+
+        print(
+            f"[WELCOME] ERROR: החדר '{WELCOME_CHANNEL_NAME}' לא נמצא."
+        )
+
+        return
+
+    embed = discord.Embed(
+        title="🦊 ברוכים הבאים ל-Foxes!",
+        description=(
+            f"ברוכים הבאים {member.mention}!\n\n"
+            f"**{member.display_name}** הצטרף עכשיו לשרת.\n\n"
+            f"👥 אתם עכשיו **{member.guild.member_count}** חברים בשרת!\n\n"
+            "📜 עברו על החוקים\n"
+            "🎛️ בחרו את ההתראות שתרצו לקבל\n\n"
+            "תהנו בשרת ובהצלחה!"
+        ),
+        color=discord.Color.blue()
+    )
+
+    try:
+
+        embed.set_thumbnail(
+            url=member.display_avatar.url
+        )
+
+    except Exception:
+        pass
+
+    embed.set_footer(
+        text="Foxes • Welcome"
+    )
+
+    try:
+
+        await channel.send(
+            embed=embed
+        )
+
+        print(
+            f"[WELCOME] Welcome נשלח עבור {member}"
+        )
+
+        await channel.send(
+            embed=create_role_panel_embed(member.guild),
+            view=RoleSelectionView()
+        )
+
+        print(
+            "[WELCOME] פאנל הרולים נשלח."
+        )
+
+    except discord.Forbidden:
+
+        print(
+            "[WELCOME] ERROR: אין לבוט הרשאת Send Messages / Embed Links."
+        )
+
+    except discord.HTTPException as e:
+
+        print(
+            f"[WELCOME] ERROR: {e}"
+        )
 
 
 # =========================
@@ -337,7 +645,6 @@ class TicketControlView(discord.ui.View):
             f"👤 **{interaction.user.mention} לקח טיפול בטיקט הזה.**"
         )
 
-
     @discord.ui.button(
         label="סגירת טיקט",
         emoji="🔒",
@@ -528,6 +835,33 @@ async def ticket_command(
 
 
 # =========================
+# WELCOME PANEL COMMAND
+# =========================
+
+@bot.tree.command(
+    name="welcome",
+    description="שליחת פאנל הרולים של השרת"
+)
+async def welcome_command(
+    interaction: discord.Interaction
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול לשלוח את הפאנל.",
+            ephemeral=True
+        )
+
+        return
+
+    await interaction.response.send_message(
+        embed=create_role_panel_embed(interaction.guild),
+        view=RoleSelectionView()
+    )
+
+
+# =========================
 # XP + LINK SYSTEM
 # =========================
 
@@ -592,21 +926,21 @@ async def on_message(message):
 @bot.event
 async def setup_hook():
 
-    # טוען את הכפתורים
+    # Persistent views
     bot.add_view(TicketView())
     bot.add_view(TicketControlView())
+    bot.add_view(RoleSelectionView())
 
-    # מוחק פקודות ישנות מהשרת
+    # ניקוי פקודות ישנות מהשרת
     bot.tree.clear_commands(
         guild=GUILD
     )
 
-    # מוסיף את הפקודות הנוכחיות לשרת
+    # הוספת הפקודות הנוכחיות
     bot.tree.copy_global_to(
         guild=GUILD
     )
 
-    # סנכרון ישיר לשרת
     synced = await bot.tree.sync(
         guild=GUILD
     )
@@ -616,10 +950,15 @@ async def setup_hook():
     )
 
     for command in synced:
+
         print(
             f"/{command.name}"
         )
 
+
+# =========================
+# READY
+# =========================
 
 @bot.event
 async def on_ready():
@@ -627,6 +966,9 @@ async def on_ready():
     print("--------------------------------")
     print(
         f"הבוט מחובר בתור {bot.user}"
+    )
+    print(
+        f"שרת יעד: {GUILD_ID}"
     )
     print("--------------------------------")
 
