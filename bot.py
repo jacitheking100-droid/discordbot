@@ -1,13 +1,11 @@
-import os
-import re
-import sqlite3
-import asyncio
-import time
-from typing import Optional
-
 import discord
 from discord import app_commands
 from discord.ext import commands
+import sqlite3
+import asyncio
+import time
+import os
+from typing import Optional
 
 
 # =========================================================
@@ -15,15 +13,13 @@ from discord.ext import commands
 # =========================================================
 
 GUILD_ID = 1552344386526908488
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 XP_PER_MESSAGE = 50
 XP_COOLDOWN = 60
 
-SUGGESTION_INPUT_CHANNEL = "💡・הצעות-לשרת"
-SUGGESTION_OUTPUT_CHANNEL = "📋・הצעות-שהוצעו"
-XP_SHOP_CHANNEL = "🛒・חנות-xp"
-
 TICKET_CATEGORY_NAME = "🎫・טיקטים"
+BOOST_CHANNEL_NAME = "boost"
 
 STAFF_ROLES = {
     "MOD",
@@ -33,60 +29,25 @@ STAFF_ROLES = {
     "KING FOX",
 }
 
-
-# =========================================================
-# XP SHOP
-# =========================================================
-
-XP_SHOP_ITEMS = [
-    {
-        "name": "🟢 Active Member",
-        "role_name": "Active Member",
-        "price": 2500,
-    },
-    {
-        "name": "🔵 Elite Member",
-        "role_name": "Elite Member",
-        "price": 5000,
-    },
-    {
-        "name": "🟣 Premium",
-        "role_name": "Premium",
-        "price": 10000,
-    },
-    {
-        "name": "🟠 Legend",
-        "role_name": "Legend",
-        "price": 20000,
-    },
-    {
-        "name": "🔴 OG Fox",
-        "role_name": "OG Fox",
-        "price": 35000,
-    },
-    {
-        "name": "👑 Royal Fox",
-        "role_name": "Royal Fox",
-        "price": 50000,
-    },
-]
-
-
-# =========================================================
-# INTENTS
-# =========================================================
-
-intents = discord.Intents.default()
-
-intents.guilds = True
-intents.members = True
-intents.messages = True
-intents.message_content = True
+XP_ROLES = {
+    2500: "Active Member",
+    5000: "Elite Member",
+    10000: "Premium",
+    20000: "Legend",
+    35000: "OG Fox",
+    50000: "Royal Fox",
+}
 
 
 # =========================================================
 # BOT
 # =========================================================
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.messages = True
+intents.message_content = True
 
 bot = commands.Bot(
     command_prefix="!",
@@ -107,9 +68,7 @@ conn = sqlite3.connect(
 )
 
 conn.row_factory = sqlite3.Row
-
 cursor = conn.cursor()
-
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS xp (
@@ -118,14 +77,12 @@ CREATE TABLE IF NOT EXISTS xp (
 )
 """)
 
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS warnings (
     user_id INTEGER PRIMARY KEY,
     warnings INTEGER NOT NULL DEFAULT 0
 )
 """)
-
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS suggestions (
@@ -138,7 +95,6 @@ CREATE TABLE IF NOT EXISTS suggestions (
 )
 """)
 
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS suggestion_votes (
     suggestion_id INTEGER NOT NULL,
@@ -148,135 +104,78 @@ CREATE TABLE IF NOT EXISTS suggestion_votes (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ticket_claims (
+    channel_id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    staff_id INTEGER
+)
+""")
+
 conn.commit()
 
 
 # =========================================================
-# XP FUNCTIONS
+# XP
 # =========================================================
 
 def get_xp(user_id: int) -> int:
-
     row = cursor.execute(
         "SELECT xp FROM xp WHERE user_id = ?",
-        (user_id,),
+        (user_id,)
     ).fetchone()
 
-    if row is None:
-
-        cursor.execute(
-            "INSERT INTO xp (user_id, xp) VALUES (?, 0)",
-            (user_id,),
-        )
-
-        conn.commit()
-
-        return 0
-
-    return int(row["xp"])
-
-
-def add_xp(user_id: int, amount: int) -> int:
-
-    current = get_xp(user_id)
-
-    new_xp = current + amount
-
-    cursor.execute(
-        """
-        UPDATE xp
-        SET xp = ?
-        WHERE user_id = ?
-        """,
-        (new_xp, user_id),
-    )
-
-    conn.commit()
-
-    return new_xp
-
-
-def remove_xp(user_id: int, amount: int) -> bool:
-
-    current = get_xp(user_id)
-
-    if current < amount:
-        return False
-
-    cursor.execute(
-        """
-        UPDATE xp
-        SET xp = ?
-        WHERE user_id = ?
-        """,
-        (current - amount, user_id),
-    )
-
-    conn.commit()
-
-    return True
+    return int(row["xp"]) if row else 0
 
 
 def set_xp(user_id: int, amount: int):
-
-    cursor.execute(
-        """
+    cursor.execute("""
         INSERT INTO xp (user_id, xp)
         VALUES (?, ?)
         ON CONFLICT(user_id)
         DO UPDATE SET xp = excluded.xp
-        """,
-        (user_id, amount),
-    )
+    """, (user_id, amount))
 
     conn.commit()
 
 
+def add_xp(user_id: int, amount: int) -> int:
+    new_xp = get_xp(user_id) + amount
+    set_xp(user_id, new_xp)
+    return new_xp
+
+
+def remove_xp(user_id: int, amount: int) -> int:
+    new_xp = max(0, get_xp(user_id) - amount)
+    set_xp(user_id, new_xp)
+    return new_xp
+
+
 # =========================================================
-# WARNING FUNCTIONS
+# WARNINGS
 # =========================================================
 
 def get_warnings(user_id: int) -> int:
-
     row = cursor.execute(
         "SELECT warnings FROM warnings WHERE user_id = ?",
-        (user_id,),
+        (user_id,)
     ).fetchone()
 
-    if row is None:
-
-        cursor.execute(
-            """
-            INSERT INTO warnings
-            (user_id, warnings)
-            VALUES (?, 0)
-            """,
-            (user_id,),
-        )
-
-        conn.commit()
-
-        return 0
-
-    return int(row["warnings"])
+    return int(row["warnings"]) if row else 0
 
 
 def add_warning(user_id: int) -> int:
+    new_amount = get_warnings(user_id) + 1
 
-    amount = get_warnings(user_id) + 1
-
-    cursor.execute(
-        """
-        UPDATE warnings
-        SET warnings = ?
-        WHERE user_id = ?
-        """,
-        (amount, user_id),
-    )
+    cursor.execute("""
+        INSERT INTO warnings (user_id, warnings)
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET warnings = excluded.warnings
+    """, (user_id, new_amount))
 
     conn.commit()
-
-    return amount
+    return new_amount
 
 
 # =========================================================
@@ -284,7 +183,6 @@ def add_warning(user_id: int) -> int:
 # =========================================================
 
 def is_staff(member: discord.Member) -> bool:
-
     if member.guild_permissions.administrator:
         return True
 
@@ -295,17 +193,269 @@ def is_staff(member: discord.Member) -> bool:
 
 
 # =========================================================
-# CHANNEL HELPER
+# XP PER MESSAGE
 # =========================================================
 
-def find_text_channel(
-    guild: discord.Guild,
-    name: str,
+xp_cooldowns = {}
+
+
+@bot.event
+async def on_message(message: discord.Message):
+
+    if message.author.bot:
+        return
+
+    now = time.time()
+    last = xp_cooldowns.get(message.author.id, 0)
+
+    if now - last >= XP_COOLDOWN:
+        add_xp(message.author.id, XP_PER_MESSAGE)
+        xp_cooldowns[message.author.id] = now
+
+    await bot.process_commands(message)
+
+
+# =========================================================
+# /XP
+# =========================================================
+
+@bot.tree.command(
+    name="xp",
+    description="בדוק XP",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש"
+)
+async def xp_command(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None
 ):
 
-    return discord.utils.get(
-        guild.text_channels,
-        name=name,
+    target = user or interaction.user
+    amount = get_xp(target.id)
+
+    await interaction.response.send_message(
+        f"⭐ ל-{target.mention} יש **{amount:,} XP**."
+    )
+
+
+# =========================================================
+# /ADDXP
+# =========================================================
+
+@bot.tree.command(
+    name="addxp",
+    description="הוסף XP למשתמש",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש",
+    amount="כמות XP"
+)
+async def addxp_command(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    amount: int
+):
+
+    try:
+
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "❌ לא ניתן להשתמש בפקודה כאן.",
+                ephemeral=True
+            )
+            return
+
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(
+                "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
+                ephemeral=True
+            )
+            return
+
+        if amount <= 0:
+            await interaction.response.send_message(
+                "❌ הכמות חייבת להיות גדולה מ־0.",
+                ephemeral=True
+            )
+            return
+
+        new_xp = add_xp(user.id, amount)
+
+        await interaction.response.send_message(
+            f"✅ נוסף ל-{user.mention} **{amount:,} XP**.\n"
+            f"⭐ XP נוכחי: **{new_xp:,}**"
+        )
+
+    except Exception as e:
+
+        print(
+            f"ADDXP ERROR: {type(e).__name__}: {e}"
+        )
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ אירעה שגיאה.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ אירעה שגיאה.",
+                    ephemeral=True
+                )
+        except:
+            pass
+
+
+# =========================================================
+# /REMOVEXP
+# =========================================================
+
+@bot.tree.command(
+    name="removexp",
+    description="הסר XP",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש",
+    amount="כמות XP"
+)
+async def removexp_command(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    amount: int
+):
+
+    if not is_staff(interaction.user):
+        await interaction.response.send_message(
+            "❌ אין לך הרשאה.",
+            ephemeral=True
+        )
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message(
+            "❌ הכמות חייבת להיות גדולה מ־0.",
+            ephemeral=True
+        )
+        return
+
+    new_xp = remove_xp(user.id, amount)
+
+    await interaction.response.send_message(
+        f"✅ הוסרו מ-{user.mention} **{amount:,} XP**.\n"
+        f"⭐ XP נוכחי: **{new_xp:,}**"
+    )
+
+
+# =========================================================
+# /SETXP
+# =========================================================
+
+@bot.tree.command(
+    name="setxp",
+    description="קבע XP למשתמש",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש",
+    amount="XP חדש"
+)
+async def setxp_command(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    amount: int
+):
+
+    if not is_staff(interaction.user):
+        await interaction.response.send_message(
+            "❌ אין לך הרשאה.",
+            ephemeral=True
+        )
+        return
+
+    if amount < 0:
+        await interaction.response.send_message(
+            "❌ XP לא יכול להיות שלילי.",
+            ephemeral=True
+        )
+        return
+
+    set_xp(user.id, amount)
+
+    await interaction.response.send_message(
+        f"✅ ה-XP של {user.mention} נקבע ל־**{amount:,} XP**."
+    )
+
+
+# =========================================================
+# /WARN
+# =========================================================
+
+@bot.tree.command(
+    name="warn",
+    description="תן אזהרה",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש",
+    reason="סיבה"
+)
+async def warn_command(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    reason: str
+):
+
+    if not is_staff(interaction.user):
+        await interaction.response.send_message(
+            "❌ אין לך הרשאה.",
+            ephemeral=True
+        )
+        return
+
+    amount = add_warning(user.id)
+
+    embed = discord.Embed(
+        title="⚠️ אזהרה חדשה",
+        description=(
+            f"👤 משתמש: {user.mention}\n"
+            f"📝 סיבה: {reason}\n"
+            f"⚠️ אזהרות: **{amount}**"
+        ),
+        color=discord.Color.orange()
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+
+# =========================================================
+# /WARNINGS
+# =========================================================
+
+@bot.tree.command(
+    name="warnings",
+    description="בדוק אזהרות",
+    guild=GUILD
+)
+@app_commands.describe(
+    user="המשתמש"
+)
+async def warnings_command(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None
+):
+
+    target = user or interaction.user
+    amount = get_warnings(target.id)
+
+    await interaction.response.send_message(
+        f"⚠️ ל-{target.mention} יש **{amount} אזהרות**."
     )
 
 
@@ -313,589 +463,84 @@ def find_text_channel(
 # XP SHOP
 # =========================================================
 
-async def get_or_create_shop_role(
-    guild: discord.Guild,
-    role_name: str,
+class XPShopView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="בדוק חנות XP",
+        emoji="🛒",
+        style=discord.ButtonStyle.primary,
+        custom_id="xp_shop"
+    )
+    async def xp_shop(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        embed = discord.Embed(
+            title="🛒 חנות XP",
+            color=discord.Color.blurple()
+        )
+
+        for xp, role in XP_ROLES.items():
+            embed.add_field(
+                name=f"⭐ {xp:,} XP",
+                value=f"🏷️ {role}",
+                inline=False
+            )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="xpshop",
+    description="פתח את חנות ה-XP",
+    guild=GUILD
+)
+async def xpshop_command(
+    interaction: discord.Interaction
 ):
-
-    role = discord.utils.get(
-        guild.roles,
-        name=role_name,
-    )
-
-    if role:
-        return role
-
-    return await guild.create_role(
-        name=role_name,
-        reason="XP Shop role",
-    )
-
-
-def build_xp_shop_embed():
 
     embed = discord.Embed(
         title="🛒 חנות XP",
         description=(
-            "קונים רולים באמצעות XP.\n"
-            "בחרו רול מהתפריט למטה.\n\n"
-            "הרולים בחנות אינם מקבלים הרשאות ניהול."
+            "צבור XP וקבל דרגות מיוחדות!\n\n"
+            "לחץ על הכפתור כדי לראות את החנות."
         ),
-        color=discord.Color.blurple(),
+        color=discord.Color.blurple()
     )
 
-    lines = []
-
-    for item in XP_SHOP_ITEMS:
-
-        lines.append(
-            f"{item['name']} — **{item['price']:,} XP**"
-        )
-
-    embed.add_field(
-        name="🎁 הרולים בחנות",
-        value="\n".join(lines),
-        inline=False,
+    await interaction.response.send_message(
+        embed=embed,
+        view=XPShopView()
     )
-
-    embed.set_footer(
-        text="בחרו רול מהתפריט כדי לרכוש אותו"
-    )
-
-    return embed
-
-
-class XPShopSelect(discord.ui.Select):
-
-    def __init__(self):
-
-        options = []
-
-        for item in XP_SHOP_ITEMS:
-
-            options.append(
-                discord.SelectOption(
-                    label=item["role_name"],
-                    description=f"{item['price']:,} XP",
-                    value=item["role_name"],
-                )
-            )
-
-        super().__init__(
-            placeholder="בחרו רול לרכישה",
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id="xp_shop_select",
-        )
-
-    async def callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        if interaction.guild is None:
-
-            await interaction.response.send_message(
-                "❌ החנות זמינה רק בשרת.",
-                ephemeral=True,
-            )
-
-            return
-
-        selected_name = self.values[0]
-
-        item = next(
-            (
-                x for x in XP_SHOP_ITEMS
-                if x["role_name"] == selected_name
-            ),
-            None,
-        )
-
-        if item is None:
-
-            await interaction.response.send_message(
-                "❌ הרול לא נמצא.",
-                ephemeral=True,
-            )
-
-            return
-
-        role = await get_or_create_shop_role(
-            interaction.guild,
-            item["role_name"],
-        )
-
-        if role in interaction.user.roles:
-
-            await interaction.response.send_message(
-                "❌ כבר יש לך את הרול הזה.",
-                ephemeral=True,
-            )
-
-            return
-
-        current_xp = get_xp(
-            interaction.user.id
-        )
-
-        price = item["price"]
-
-        if current_xp < price:
-
-            await interaction.response.send_message(
-                f"❌ אין לך מספיק XP.\n\n"
-                f"⭐ XP שלך: **{current_xp:,}**\n"
-                f"💰 מחיר: **{price:,} XP**\n"
-                f"📉 חסר לך: **{price - current_xp:,} XP**",
-                ephemeral=True,
-            )
-
-            return
-
-        me = interaction.guild.me
-
-        if me is None:
-
-            await interaction.response.send_message(
-                "❌ לא הצלחתי לבדוק את תפקיד הבוט.",
-                ephemeral=True,
-            )
-
-            return
-
-        if role >= me.top_role:
-
-            await interaction.response.send_message(
-                "❌ הבוט לא יכול לתת את הרול הזה.\n"
-                "שים את הרול של הבוט מעל רולי ה-XP.",
-                ephemeral=True,
-            )
-
-            return
-
-        removed = remove_xp(
-            interaction.user.id,
-            price,
-        )
-
-        if not removed:
-
-            await interaction.response.send_message(
-                "❌ הרכישה נכשלה.",
-                ephemeral=True,
-            )
-
-            return
-
-        try:
-
-            await interaction.user.add_roles(
-                role,
-                reason="XP Shop purchase",
-            )
-
-        except (discord.Forbidden, discord.HTTPException):
-
-            add_xp(
-                interaction.user.id,
-                price,
-            )
-
-            await interaction.response.send_message(
-                "❌ לא הצלחתי לתת את הרול.\n"
-                "ה-XP הוחזר.",
-                ephemeral=True,
-            )
-
-            return
-
-        remaining = get_xp(
-            interaction.user.id
-        )
-
-        await interaction.response.send_message(
-            f"🎉 הרכישה הצליחה!\n\n"
-            f"🎁 רול: **{role.name}**\n"
-            f"💸 שולם: **{price:,} XP**\n"
-            f"⭐ נשאר לך: **{remaining:,} XP**",
-            ephemeral=True,
-        )
-
-
-class XPShopView(discord.ui.View):
-
-    def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
-
-        self.add_item(
-            XPShopSelect()
-        )
 
 
 # =========================================================
 # SUGGESTIONS
 # =========================================================
 
-def get_suggestion_votes(
-    suggestion_id: int,
-):
-
-    rows = cursor.execute(
-        """
-        SELECT vote, COUNT(*) AS amount
-        FROM suggestion_votes
-        WHERE suggestion_id = ?
-        GROUP BY vote
-        """,
-        (suggestion_id,),
-    ).fetchall()
-
-    likes = 0
-    dislikes = 0
-
-    for row in rows:
-
-        if row["vote"] == 1:
-            likes = row["amount"]
-
-        elif row["vote"] == -1:
-            dislikes = row["amount"]
-
-    return likes, dislikes
-
-
-def get_user_suggestion_vote(
-    suggestion_id: int,
-    user_id: int,
-):
-
-    row = cursor.execute(
-        """
-        SELECT vote
-        FROM suggestion_votes
-        WHERE suggestion_id = ?
-        AND user_id = ?
-        """,
-        (
-            suggestion_id,
-            user_id,
-        ),
-    ).fetchone()
-
-    if row is None:
-        return None
-
-    return int(row["vote"])
-
-
-def set_suggestion_vote(
-    suggestion_id: int,
-    user_id: int,
-    vote: int,
-):
-
-    current = get_user_suggestion_vote(
-        suggestion_id,
-        user_id,
-    )
-
-    if current == vote:
-
-        cursor.execute(
-            """
-            DELETE FROM suggestion_votes
-            WHERE suggestion_id = ?
-            AND user_id = ?
-            """,
-            (
-                suggestion_id,
-                user_id,
-            ),
-        )
-
-    else:
-
-        cursor.execute(
-            """
-            INSERT INTO suggestion_votes
-            (suggestion_id, user_id, vote)
-            VALUES (?, ?, ?)
-            ON CONFLICT(suggestion_id, user_id)
-            DO UPDATE SET vote = excluded.vote
-            """,
-            (
-                suggestion_id,
-                user_id,
-                vote,
-            ),
-        )
-
-    conn.commit()
-
-
-def build_suggestion_embed(
-    suggestion_id: int,
-    user_id: int,
-    content: str,
-):
-
-    likes, dislikes = get_suggestion_votes(
-        suggestion_id
-    )
-
-    embed = discord.Embed(
-        title=f"💡 הצעה #{suggestion_id}",
-        description=content,
-        color=discord.Color.blurple(),
-    )
-
-    embed.add_field(
-        name="👤 הוצע על ידי",
-        value=f"<@{user_id}>",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="👍 בעד",
-        value=str(likes),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="👎 נגד",
-        value=str(dislikes),
-        inline=True,
-    )
-
-    return embed
-
-
-class SuggestionVoteView(
-    discord.ui.View
-):
-
-    def __init__(
-        self,
-        suggestion_id: int,
-    ):
-
-        super().__init__(
-            timeout=None
-        )
-
-        self.suggestion_id = suggestion_id
-
-        like = discord.ui.Button(
-            label="0",
-            emoji="👍",
-            style=discord.ButtonStyle.success,
-            custom_id=f"suggestion_like_{suggestion_id}",
-        )
-
-        dislike = discord.ui.Button(
-            label="0",
-            emoji="👎",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"suggestion_dislike_{suggestion_id}",
-        )
-
-        like.callback = self.like_callback
-        dislike.callback = self.dislike_callback
-
-        self.add_item(like)
-        self.add_item(dislike)
-
-        self.update_labels()
-
-    def update_labels(self):
-
-        likes, dislikes = get_suggestion_votes(
-            self.suggestion_id
-        )
-
-        self.children[0].label = str(likes)
-        self.children[1].label = str(dislikes)
-
-    async def refresh(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        row = cursor.execute(
-            """
-            SELECT user_id, content
-            FROM suggestions
-            WHERE id = ?
-            """,
-            (self.suggestion_id,),
-        ).fetchone()
-
-        if row is None:
-            return
-
-        self.update_labels()
-
-        embed = build_suggestion_embed(
-            self.suggestion_id,
-            row["user_id"],
-            row["content"],
-        )
-
-        try:
-
-            await interaction.message.edit(
-                embed=embed,
-                view=self,
-            )
-
-        except discord.HTTPException:
-            pass
-
-    async def like_callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        set_suggestion_vote(
-            self.suggestion_id,
-            interaction.user.id,
-            1,
-        )
-
-        await interaction.response.defer()
-
-        await self.refresh(
-            interaction
-        )
-
-    async def dislike_callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        set_suggestion_vote(
-            self.suggestion_id,
-            interaction.user.id,
-            -1,
-        )
-
-        await interaction.response.defer()
-
-        await self.refresh(
-            interaction
-        )
-
-
-class SuggestionModal(
-    discord.ui.Modal,
-    title="💡 הצעה לשרת",
-):
-
-    suggestion = discord.ui.TextInput(
-        label="מה ההצעה שלך?",
-        placeholder="כתוב כאן את ההצעה שלך...",
-        style=discord.TextStyle.paragraph,
-        min_length=3,
-        max_length=1000,
-    )
-
-    async def on_submit(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        channel = find_text_channel(
-            interaction.guild,
-            SUGGESTION_OUTPUT_CHANNEL,
-        )
-
-        if channel is None:
-
-            await interaction.response.send_message(
-                f"❌ לא נמצא החדר `{SUGGESTION_OUTPUT_CHANNEL}`.",
-                ephemeral=True,
-            )
-
-            return
-
-        cursor.execute(
-            """
-            INSERT INTO suggestions
-            (user_id, content, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (
-                interaction.user.id,
-                str(self.suggestion.value),
-                int(time.time()),
-            ),
-        )
-
-        conn.commit()
-
-        suggestion_id = cursor.lastrowid
-
-        embed = build_suggestion_embed(
-            suggestion_id,
-            interaction.user.id,
-            str(self.suggestion.value),
-        )
-
-        message = await channel.send(
-            embed=embed,
-            view=SuggestionVoteView(
-                suggestion_id
-            ),
-        )
-
-        cursor.execute(
-            """
-            UPDATE suggestions
-            SET message_id = ?,
-                channel_id = ?
-            WHERE id = ?
-            """,
-            (
-                message.id,
-                channel.id,
-                suggestion_id,
-            ),
-        )
-
-        conn.commit()
-
-        await interaction.response.send_message(
-            f"✅ ההצעה נשלחה!\n"
-            f"💡 מספר הצעה: **#{suggestion_id}**",
-            ephemeral=True,
-        )
-
-
-class SuggestionPanelView(
-    discord.ui.View
-):
+class SuggestionPanelView(discord.ui.View):
 
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="הצעה לשרת",
+        label="הצע רעיון",
         emoji="💡",
         style=discord.ButtonStyle.primary,
-        custom_id="suggestion_panel_button",
+        custom_id="open_suggestion"
     )
-    async def suggestion_button(
+    async def suggestion(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
+        button: discord.ui.Button
     ):
 
         await interaction.response.send_modal(
@@ -903,45 +548,402 @@ class SuggestionPanelView(
         )
 
 
-# =========================================================
-# TICKETS
-# =========================================================
-
-class CloseTicketView(
-    discord.ui.View
+class SuggestionModal(
+    discord.ui.Modal,
+    title="💡 הצעת רעיון"
 ):
 
-    def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
-
-    @discord.ui.button(
-        label="סגור טיקט",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="close_ticket",
+    content = discord.ui.TextInput(
+        label="מה ההצעה שלך?",
+        placeholder="כתוב כאן את הרעיון שלך...",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True
     )
-    async def close_ticket(
+
+    async def on_submit(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction: discord.Interaction
     ):
 
-        if not is_staff(
-            interaction.user
+        channel = interaction.channel
+
+        if channel is None:
+            await interaction.response.send_message(
+                "❌ לא ניתן לשלוח הצעה כאן.",
+                ephemeral=True
+            )
+            return
+
+        cursor.execute("""
+            INSERT INTO suggestions
+            (user_id, content, created_at)
+            VALUES (?, ?, ?)
+        """, (
+            interaction.user.id,
+            str(self.content),
+            int(time.time())
+        ))
+
+        suggestion_id = cursor.lastrowid
+        conn.commit()
+
+        embed = discord.Embed(
+            title=f"💡 הצעה #{suggestion_id}",
+            description=str(self.content),
+            color=discord.Color.blurple()
+        )
+
+        embed.add_field(
+            name="👤 הוצע על ידי",
+            value=interaction.user.mention,
+            inline=False
+        )
+
+        message = await channel.send(
+            embed=embed,
+            view=SuggestionVoteView(suggestion_id)
+        )
+
+        cursor.execute("""
+            UPDATE suggestions
+            SET message_id = ?, channel_id = ?
+            WHERE id = ?
+        """, (
+            message.id,
+            channel.id,
+            suggestion_id
+        ))
+
+        conn.commit()
+
+        await interaction.response.send_message(
+            "✅ ההצעה נשלחה!",
+            ephemeral=True
+        )
+
+
+class SuggestionVoteView(discord.ui.View):
+
+    def __init__(self, suggestion_id: int):
+        super().__init__(timeout=None)
+        self.suggestion_id = suggestion_id
+
+    @discord.ui.button(
+        label="בעד",
+        emoji="👍",
+        style=discord.ButtonStyle.success,
+        custom_id="suggestion_yes"
+    )
+    async def yes(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        await self.vote(interaction, 1)
+
+    @discord.ui.button(
+        label="נגד",
+        emoji="👎",
+        style=discord.ButtonStyle.danger,
+        custom_id="suggestion_no"
+    )
+    async def no(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        await self.vote(interaction, -1)
+
+    async def vote(
+        self,
+        interaction: discord.Interaction,
+        vote: int
+    ):
+
+        existing = cursor.execute("""
+            SELECT vote
+            FROM suggestion_votes
+            WHERE suggestion_id = ?
+            AND user_id = ?
+        """, (
+            self.suggestion_id,
+            interaction.user.id
+        )).fetchone()
+
+        if existing:
+            await interaction.response.send_message(
+                "❌ כבר הצבעת להצעה הזאת.",
+                ephemeral=True
+            )
+            return
+
+        cursor.execute("""
+            INSERT INTO suggestion_votes
+            (suggestion_id, user_id, vote)
+            VALUES (?, ?, ?)
+        """, (
+            self.suggestion_id,
+            interaction.user.id,
+            vote
+        ))
+
+        conn.commit()
+
+        await interaction.response.send_message(
+            "✅ ההצבעה שלך נקלטה!",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="suggestions",
+    description="שלח פאנל הצעות",
+    guild=GUILD
+)
+async def suggestions_command(
+    interaction: discord.Interaction
+):
+
+    if not is_staff(interaction.user):
+        await interaction.response.send_message(
+            "❌ רק הצוות יכול לפתוח את פאנל ההצעות.",
+            ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title="💡 הצעות ל-Foxes",
+        description=(
+            "יש לכם רעיון לשיפור השרת?\n\n"
+            "לחצו על **הצע רעיון** ושלחו אותו!"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=SuggestionPanelView()
+    )
+
+
+# =========================================================
+# TICKET DATABASE
+# =========================================================
+
+def create_ticket_record(
+    channel_id: int,
+    message_id: int
+):
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO ticket_claims
+        (channel_id, message_id, staff_id)
+        VALUES (?, ?, NULL)
+    """, (
+        channel_id,
+        message_id
+    ))
+
+    conn.commit()
+
+
+def get_ticket_claim(
+    channel_id: int
+):
+
+    row = cursor.execute("""
+        SELECT staff_id
+        FROM ticket_claims
+        WHERE channel_id = ?
+    """, (channel_id,)).fetchone()
+
+    if row is None:
+        return None
+
+    return row["staff_id"]
+
+
+def claim_ticket(
+    channel_id: int,
+    staff_id: int
+) -> bool:
+
+    cursor.execute("""
+        UPDATE ticket_claims
+        SET staff_id = ?
+        WHERE channel_id = ?
+        AND staff_id IS NULL
+    """, (
+        staff_id,
+        channel_id
+    ))
+
+    conn.commit()
+
+    return cursor.rowcount > 0
+
+
+def delete_ticket_record(
+    channel_id: int
+):
+
+    cursor.execute(
+        "DELETE FROM ticket_claims WHERE channel_id = ?",
+        (channel_id,)
+    )
+
+    conn.commit()
+
+
+# =========================================================
+# TICKET CONTROL
+# =========================================================
+
+class TicketControlView(discord.ui.View):
+
+    def __init__(
+        self,
+        channel_id: int,
+        claimed_by: Optional[int] = None
+    ):
+
+        super().__init__(timeout=None)
+
+        self.channel_id = channel_id
+        self.claimed_by = claimed_by
+
+        take_button = discord.ui.Button(
+            label="קח טיפול" if claimed_by is None else "בטיפול",
+            emoji="🟢" if claimed_by is None else "⚪",
+            style=(
+                discord.ButtonStyle.success
+                if claimed_by is None
+                else discord.ButtonStyle.secondary
+            ),
+            custom_id=f"ticket_take_{channel_id}",
+            disabled=claimed_by is not None
+        )
+
+        take_button.callback = self.take_ticket
+        self.add_item(take_button)
+
+        close_button = discord.ui.Button(
+            label="סגור טיקט",
+            emoji="🔒",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"ticket_close_{channel_id}"
+        )
+
+        close_button.callback = self.close_ticket
+        self.add_item(close_button)
+
+    async def take_ticket(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        if not isinstance(
+            interaction.user,
+            discord.Member
         ):
+            return
+
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(
+                "❌ רק הצוות יכול לקחת טיפול בטיקט.",
+                ephemeral=True
+            )
+            return
+
+        channel_id = interaction.channel.id
+
+        existing = get_ticket_claim(channel_id)
+
+        if existing is not None:
+
+            await interaction.response.send_message(
+                f"❌ הטיקט כבר בטיפול של <@{existing}>.",
+                ephemeral=True
+            )
+            return
+
+        success = claim_ticket(
+            channel_id,
+            interaction.user.id
+        )
+
+        if not success:
+
+            existing = get_ticket_claim(channel_id)
+
+            await interaction.response.send_message(
+                f"❌ הטיקט כבר בטיפול של <@{existing}>."
+                if existing
+                else "❌ לא ניתן לקחת את הטיקט כרגע.",
+                ephemeral=True
+            )
+            return
+
+        if interaction.message.embeds:
+
+            embed = interaction.message.embeds[0].copy()
+
+        else:
+
+            embed = discord.Embed(
+                title="🎫 טיקט",
+                color=discord.Color.blurple()
+            )
+
+        for i, field in enumerate(embed.fields):
+
+            if field.name == "👨‍💻 בטיפול":
+                embed.remove_field(i)
+                break
+
+        embed.add_field(
+            name="👨‍💻 בטיפול",
+            value=interaction.user.mention,
+            inline=False
+        )
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=TicketControlView(
+                channel_id,
+                interaction.user.id
+            )
+        )
+
+        await interaction.channel.send(
+            f"👨‍💻 {interaction.user.mention} "
+            f"לקח את הטיקט לטיפול."
+        )
+
+    async def close_ticket(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        if not isinstance(
+            interaction.user,
+            discord.Member
+        ):
+            return
+
+        if not is_staff(interaction.user):
 
             await interaction.response.send_message(
                 "❌ רק הצוות יכול לסגור טיקט.",
-                ephemeral=True,
+                ephemeral=True
             )
-
             return
 
         await interaction.response.send_message(
-            "🔒 הטיקט יימחק בעוד 5 שניות."
+            "🔒 הטיקט ייסגר בעוד 5 שניות."
         )
 
         await asyncio.sleep(5)
@@ -952,67 +954,68 @@ class CloseTicketView(
                 reason="Ticket closed"
             )
 
-        except discord.HTTPException:
-            pass
+            delete_ticket_record(
+                self.channel_id
+            )
+
+        except Exception as e:
+
+            print(
+                f"Ticket delete error: {e}"
+            )
 
 
-class TicketView(
-    discord.ui.View
-):
+# =========================================================
+# TICKET OPEN VIEW
+# =========================================================
+
+class TicketView(discord.ui.View):
 
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="פתח טיקט",
         emoji="🎫",
         style=discord.ButtonStyle.primary,
-        custom_id="open_ticket",
+        custom_id="open_ticket"
     )
     async def open_ticket(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
+        button: discord.ui.Button
     ):
 
         guild = interaction.guild
 
         if guild is None:
-
             await interaction.response.send_message(
                 "❌ לא ניתן לפתוח טיקט כאן.",
-                ephemeral=True,
+                ephemeral=True
             )
-
             return
 
         existing = discord.utils.get(
             guild.text_channels,
-            name=f"ticket-{interaction.user.id}",
+            name=f"ticket-{interaction.user.id}"
         )
 
         if existing:
-
             await interaction.response.send_message(
                 f"❌ כבר יש לך טיקט: {existing.mention}",
-                ephemeral=True,
+                ephemeral=True
             )
-
             return
 
         category = discord.utils.get(
             guild.categories,
-            name=TICKET_CATEGORY_NAME,
+            name=TICKET_CATEGORY_NAME
         )
 
         if category is None:
-
             category = await guild.create_category(
                 TICKET_CATEGORY_NAME,
-                reason="Ticket system",
+                reason="Ticket system"
             )
 
         overwrites = {
@@ -1027,8 +1030,8 @@ class TicketView(
                     send_messages=True,
                     read_message_history=True,
                     attach_files=True,
-                    embed_links=True,
-                ),
+                    embed_links=True
+                )
         }
 
         for role in guild.roles:
@@ -1039,14 +1042,14 @@ class TicketView(
                     view_channel=True,
                     send_messages=True,
                     read_message_history=True,
-                    manage_messages=True,
+                    manage_messages=True
                 )
 
         channel = await guild.create_text_channel(
             f"ticket-{interaction.user.id}",
             category=category,
             overwrites=overwrites,
-            reason="Ticket opened",
+            reason="Ticket opened"
         )
 
         embed = discord.Embed(
@@ -1054,478 +1057,32 @@ class TicketView(
             description=(
                 f"שלום {interaction.user.mention}!\n\n"
                 "תאר כאן את הבעיה או הבקשה שלך.\n"
-                "אחד מאנשי הצוות יעזור לך בהקדם."
+                "אחד מאנשי הצוות יעזור לך בהקדם.\n\n"
+                "🟢 **קח טיפול**\n"
+                "איש צוות יכול לקחת את הטיקט לטיפול."
             ),
-            color=discord.Color.blurple(),
+            color=discord.Color.blurple()
         )
 
-        await channel.send(
+        embed.set_footer(
+            text="Foxes • מערכת טיקטים"
+        )
+
+        message = await channel.send(
             content=interaction.user.mention,
             embed=embed,
-            view=CloseTicketView(),
+            view=TicketControlView(channel.id)
+        )
+
+        create_ticket_record(
+            channel.id,
+            message.id
         )
 
         await interaction.response.send_message(
             f"✅ הטיקט נפתח: {channel.mention}",
-            ephemeral=True,
+            ephemeral=True
         )
-
-
-# =========================================================
-# XP COOLDOWN
-# =========================================================
-
-last_xp_message = {}
-
-
-# =========================================================
-# ON MESSAGE
-# =========================================================
-
-@bot.event
-async def on_message(
-    message: discord.Message
-):
-
-    if message.author.bot:
-        return
-
-    if message.guild is None:
-        return
-
-    # Anti Link
-
-    link_pattern = re.compile(
-        r"(https?://\S+|www\.\S+)",
-        re.IGNORECASE,
-    )
-
-    if link_pattern.search(
-        message.content
-    ):
-
-        if (
-            isinstance(message.author, discord.Member)
-            and not is_staff(message.author)
-        ):
-
-            try:
-                await message.delete()
-            except discord.HTTPException:
-                pass
-
-            warning_amount = add_warning(
-                message.author.id
-            )
-
-            try:
-
-                await message.channel.send(
-                    f"⚠️ {message.author.mention} "
-                    f"קישורים אינם מותרים כאן.\n"
-                    f"⚠️ אזהרות: **{warning_amount}**",
-                    delete_after=5,
-                )
-
-            except discord.HTTPException:
-                pass
-
-            return
-
-    # XP
-
-    now = time.time()
-
-    last_time = last_xp_message.get(
-        message.author.id,
-        0,
-    )
-
-    if now - last_time >= XP_COOLDOWN:
-
-        add_xp(
-            message.author.id,
-            XP_PER_MESSAGE,
-        )
-
-        last_xp_message[
-            message.author.id
-        ] = now
-
-    await bot.process_commands(
-        message
-    )
-
-
-# =========================================================
-# WELCOME
-# =========================================================
-
-@bot.event
-async def on_member_join(
-    member: discord.Member
-):
-
-    channel = discord.utils.get(
-        member.guild.text_channels,
-        name="welcome",
-    )
-
-    if channel is None:
-        return
-
-    embed = discord.Embed(
-        title="🦊 ברוך הבא ל-Foxes!",
-        description=(
-            f"ברוך הבא {member.mention}!\n"
-            f"אנחנו שמחים שהצטרפת לשרת."
-        ),
-        color=discord.Color.orange(),
-    )
-
-    embed.set_thumbnail(
-        url=member.display_avatar.url
-    )
-
-    embed.set_footer(
-        text=f"Member #{member.guild.member_count}"
-    )
-
-    try:
-        await channel.send(
-            embed=embed
-        )
-    except discord.HTTPException:
-        pass
-
-
-# =========================================================
-# /XP
-# =========================================================
-
-@bot.tree.command(
-    name="xp",
-    description="בדוק כמה XP יש לך או למשתמש אחר",
-)
-@app_commands.describe(
-    user="המשתמש שתרצה לבדוק",
-)
-async def xp_command(
-    interaction: discord.Interaction,
-    user: Optional[discord.Member] = None,
-):
-
-    target = user or interaction.user
-
-    amount = get_xp(
-        target.id
-    )
-
-    await interaction.response.send_message(
-        f"⭐ ל-{target.mention} יש "
-        f"**{amount:,} XP**."
-    )
-
-
-# =========================================================
-# /ADDXP
-# =========================================================
-
-@bot.tree.command(
-    name="addxp",
-    description="הוסף XP למשתמש",
-)
-@app_commands.describe(
-    user="המשתמש שיקבל XP",
-    amount="כמות ה-XP להוסיף",
-)
-async def addxp_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    amount: int,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
-            ephemeral=True,
-        )
-
-        return
-
-    if amount <= 0:
-
-        await interaction.response.send_message(
-            "❌ הכמות חייבת להיות גדולה מ-0.",
-            ephemeral=True,
-        )
-
-        return
-
-    new_xp = add_xp(
-        user.id,
-        amount,
-    )
-
-    await interaction.response.send_message(
-        f"✅ נוסף ל-{user.mention} "
-        f"**{amount:,} XP**.\n"
-        f"⭐ XP נוכחי: **{new_xp:,}**"
-    )
-
-
-# =========================================================
-# /REMOVEXP
-# =========================================================
-
-@bot.tree.command(
-    name="removexp",
-    description="הסר XP ממשתמש",
-)
-@app_commands.describe(
-    user="המשתמש שממנו יורד XP",
-    amount="כמות ה-XP להסיר",
-)
-async def removexp_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    amount: int,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
-            ephemeral=True,
-        )
-
-        return
-
-    if amount <= 0:
-
-        await interaction.response.send_message(
-            "❌ הכמות חייבת להיות גדולה מ-0.",
-            ephemeral=True,
-        )
-
-        return
-
-    current = get_xp(
-        user.id
-    )
-
-    if current < amount:
-
-        await interaction.response.send_message(
-            f"❌ אין למשתמש מספיק XP.\n"
-            f"⭐ XP נוכחי: **{current:,}**",
-            ephemeral=True,
-        )
-
-        return
-
-    remove_xp(
-        user.id,
-        amount,
-    )
-
-    new_xp = get_xp(
-        user.id
-    )
-
-    await interaction.response.send_message(
-        f"✅ הוסר מ-{user.mention} "
-        f"**{amount:,} XP**.\n"
-        f"⭐ XP נוכחי: **{new_xp:,}**"
-    )
-
-
-# =========================================================
-# /SETXP
-# =========================================================
-
-@bot.tree.command(
-    name="setxp",
-    description="קבע XP למשתמש",
-)
-@app_commands.describe(
-    user="המשתמש",
-    amount="כמות ה-XP החדשה",
-)
-async def setxp_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    amount: int,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
-            ephemeral=True,
-        )
-
-        return
-
-    if amount < 0:
-
-        await interaction.response.send_message(
-            "❌ אי אפשר להגדיר XP שלילי.",
-            ephemeral=True,
-        )
-
-        return
-
-    set_xp(
-        user.id,
-        amount,
-    )
-
-    await interaction.response.send_message(
-        f"✅ ה-XP של {user.mention} "
-        f"הוגדר ל-**{amount:,} XP**."
-    )
-
-
-# =========================================================
-# /WARNINGS
-# =========================================================
-
-@bot.tree.command(
-    name="warnings",
-    description="בדוק כמה אזהרות יש למשתמש",
-)
-@app_commands.describe(
-    user="המשתמש",
-)
-async def warnings_command(
-    interaction: discord.Interaction,
-    user: Optional[discord.Member] = None,
-):
-
-    target = user or interaction.user
-
-    amount = get_warnings(
-        target.id
-    )
-
-    await interaction.response.send_message(
-        f"⚠️ ל-{target.mention} יש "
-        f"**{amount} אזהרות**."
-    )
-
-
-# =========================================================
-# /WARN
-# =========================================================
-
-@bot.tree.command(
-    name="warn",
-    description="תן אזהרה למשתמש",
-)
-@app_commands.describe(
-    user="המשתמש שיקבל אזהרה",
-)
-async def warn_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
-            ephemeral=True,
-        )
-
-        return
-
-    amount = add_warning(
-        user.id
-    )
-
-    await interaction.response.send_message(
-        f"⚠️ {user.mention} קיבל אזהרה.\n"
-        f"⚠️ סה״כ אזהרות: **{amount}**"
-    )
-
-
-# =========================================================
-# /XPSHOP
-# =========================================================
-
-@bot.tree.command(
-    name="xpshop",
-    description="שלח את חנות ה-XP",
-)
-async def xpshop_command(
-    interaction: discord.Interaction,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ רק הצוות יכול לשלוח את החנות.",
-            ephemeral=True,
-        )
-
-        return
-
-    embed = build_xp_shop_embed()
-
-    await interaction.response.send_message(
-        embed=embed,
-        view=XPShopView(),
-    )
-
-
-# =========================================================
-# /SUGGESTIONS
-# =========================================================
-
-@bot.tree.command(
-    name="suggestions",
-    description="שלח פאנל הצעות",
-)
-async def suggestions_command(
-    interaction: discord.Interaction,
-):
-
-    if not is_staff(
-        interaction.user
-    ):
-
-        await interaction.response.send_message(
-            "❌ רק הצוות יכול לשלוח את פאנל ההצעות.",
-            ephemeral=True,
-        )
-
-        return
-
-    embed = discord.Embed(
-        title="💡 הצעות לשרת",
-        description=(
-            "יש לכם רעיון לשיפור השרת?\n\n"
-            "לחצו על הכפתור למטה ושלחו את ההצעה שלכם."
-        ),
-        color=discord.Color.blurple(),
-    )
-
-    await interaction.response.send_message(
-        embed=embed,
-        view=SuggestionPanelView(),
-    )
 
 
 # =========================================================
@@ -1534,95 +1091,282 @@ async def suggestions_command(
 
 @bot.tree.command(
     name="ticket",
-    description="שלח פאנל פתיחת טיקט",
+    description="שלח פאנל טיקטים",
+    guild=GUILD
 )
 async def ticket_command(
-    interaction: discord.Interaction,
+    interaction: discord.Interaction
 ):
 
-    if not is_staff(
-        interaction.user
-    ):
+    if not is_staff(interaction.user):
 
         await interaction.response.send_message(
             "❌ רק הצוות יכול לשלוח את פאנל הטיקטים.",
-            ephemeral=True,
+            ephemeral=True
         )
-
         return
 
     embed = discord.Embed(
-        title="🎫 מערכת טיקטים",
+        title="🎫 מערכת התמיכה של Foxes",
         description=(
-            "צריכים עזרה?\n\n"
-            "לחצו על **פתח טיקט** כדי לפתוח חדר פרטי עם הצוות."
+            "יש לכם שאלה, בעיה או בקשה?\n\n"
+            "פתחו טיקט ואחד מאנשי הצוות יעזור לכם.\n\n"
+            "🦊 **Foxes Support**"
         ),
-        color=discord.Color.blurple(),
+        color=discord.Color.blurple()
+    )
+
+    embed.set_footer(
+        text="Foxes • Support System"
     )
 
     await interaction.response.send_message(
         embed=embed,
-        view=TicketView(),
+        view=TicketView()
     )
 
 
 # =========================================================
-# SETUP HOOK
+# SERVER BOOST
 # =========================================================
 
 @bot.event
-async def setup_hook():
+async def on_member_update(
+    before: discord.Member,
+    after: discord.Member
+):
 
-    bot.add_view(XPShopView())
-    bot.add_view(SuggestionPanelView())
-    bot.add_view(TicketView())
-    bot.add_view(CloseTicketView())
+    if (
+        before.premium_since is None
+        and after.premium_since is not None
+    ):
 
-    rows = cursor.execute(
-        "SELECT id FROM suggestions WHERE message_id IS NOT NULL"
-    ).fetchall()
+        new_xp = add_xp(
+            after.id,
+            1000
+        )
 
-    for row in rows:
-        try:
-            bot.add_view(
-                SuggestionVoteView(row["id"])
+        channel = discord.utils.get(
+            after.guild.text_channels,
+            name=BOOST_CHANNEL_NAME
+        )
+
+        if channel is None:
+            channel = discord.utils.get(
+                after.guild.text_channels,
+                name="server-boost"
             )
+
+        if channel is None:
+
+            print(
+                f"Boost by {after} detected. "
+                f"+1000 XP"
+            )
+            return
+
+        embed = discord.Embed(
+            title="🚀 BOOST חדש לשרת!",
+            description=(
+                f"🎉 {after.mention} "
+                "**עשה Server Boost ל-Foxes!**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "🦊 תודה ענקית על התמיכה בשרת!\n\n"
+                "⭐ **פרס Boost**\n"
+                "💎 +**1,000 XP**\n"
+                f"📊 ה-XP שלך עכשיו: **{new_xp:,}**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "❤️ תודה שעזרת לחזק את Foxes!"
+            ),
+            color=discord.Color.fuchsia()
+        )
+
+        embed.set_thumbnail(
+            url=after.display_avatar.url
+        )
+
+        embed.set_footer(
+            text="Foxes • תודה על התמיכה!"
+        )
+
+        try:
+
+            await channel.send(
+                content=after.mention,
+                embed=embed
+            )
+
+            print(
+                f"Boost announcement sent for {after}"
+            )
+
         except Exception as e:
-            print(f"Suggestion restore error: {e}")
 
-    # סנכרון הפקודות לשרת
+            print(
+                f"Boost announcement error: {e}"
+            )
+
+
+# =========================================================
+# SLASH COMMAND ERRORS
+# =========================================================
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+
+    print(
+        f"SLASH ERROR: {type(error).__name__}: {error}"
+    )
+
     try:
-        synced = await bot.tree.sync(
-            guild=discord.Object(id=GUILD_ID)
-        )
 
-        print(
-            f"✅ Synced {len(synced)} commands to Foxes"
-        )
+        if interaction.response.is_done():
 
-        for command in synced:
-            print(f"   /{command.name}")
+            await interaction.followup.send(
+                "❌ אירעה שגיאה בפקודה.",
+                ephemeral=True
+            )
 
-    except Exception as e:
-        print(
-            f"❌ Command sync error: {e}"
-        )
+        else:
+
+            await interaction.response.send_message(
+                "❌ אירעה שגיאה בפקודה.",
+                ephemeral=True
+            )
+
+    except:
+        pass
 
 
 # =========================================================
 # READY
 # =========================================================
 
+synced_once = False
+
+
 @bot.event
 async def on_ready():
 
-    print(
-        f"🦊 Logged in as {bot.user} "
-        f"({bot.user.id})"
-    )
+    global synced_once
 
     print(
-        "✅ Foxes bot is online!"
+        f"🦊 Logged in as {bot.user} ({bot.user.id})"
+    )
+
+    if synced_once:
+        return
+
+    # Persistent views
+    try:
+
+        bot.add_view(XPShopView())
+        bot.add_view(SuggestionPanelView())
+        bot.add_view(TicketView())
+
+        print("✅ Persistent views loaded")
+
+    except Exception as e:
+
+        print(
+            f"View loading error: {e}"
+        )
+
+    # Restore suggestions
+    try:
+
+        rows = cursor.execute("""
+            SELECT id
+            FROM suggestions
+            WHERE message_id IS NOT NULL
+        """).fetchall()
+
+        for row in rows:
+
+            try:
+
+                bot.add_view(
+                    SuggestionVoteView(row["id"])
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Suggestion restore error: {e}"
+                )
+
+    except Exception as e:
+
+        print(
+            f"Suggestion database error: {e}"
+        )
+
+    # Restore tickets
+    try:
+
+        rows = cursor.execute("""
+            SELECT channel_id, message_id, staff_id
+            FROM ticket_claims
+        """).fetchall()
+
+        for row in rows:
+
+            try:
+
+                bot.add_view(
+                    TicketControlView(
+                        row["channel_id"],
+                        row["staff_id"]
+                    ),
+                    message_id=row["message_id"]
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Ticket restore error: {e}"
+                )
+
+        print(
+            f"🎫 Restored {len(rows)} ticket views"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Ticket database error: {e}"
+        )
+
+    # Sync slash commands
+    try:
+
+        synced = await bot.tree.sync(
+            guild=GUILD
+        )
+
+        print(
+            f"✅ Synced {len(synced)} commands"
+        )
+
+        for command in synced:
+
+            print(
+                f"   /{command.name}"
+            )
+
+    except Exception as e:
+
+        print(
+            f"Command sync error: {e}"
+        )
+
+    synced_once = True
+
+    print(
+        "🦊 Foxes bot is ONLINE!"
     )
 
 
@@ -1630,14 +1374,4 @@ async def on_ready():
 # RUN
 # =========================================================
 
-TOKEN = os.environ.get(
-    "DISCORD_TOKEN"
-)
-
-if not TOKEN:
-
-    raise RuntimeError(
-        "DISCORD_TOKEN לא מוגדר ב-Railway"
-    )
-
-bot.run(TOKEN)
+bot.run(DISCORD_TOKEN)
