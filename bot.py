@@ -1,4 +1,4 @@
-import discord
+code = r'''import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -36,8 +36,11 @@ TICKET_CATEGORY_NAME = "🎫・טיקטים"
 LOG_CATEGORY_NAME = "📋・לוגים"
 
 VERIFIED_ROLE_NAME = "Member"
-UPDATES_ROLE_NAME = "🔔・עדכונים והגרלות"
+UPDATES_ROLE_NAME = "🔔・עדכונים"
+GIVEAWAYS_ROLE_NAME = "🎉・הגרלות"
 DAILY_SPECIAL_ROLE_NAME = "Daily Fox"
+
+RULES_CHANNEL_NAME = "📜・חוקים"
 
 DAILY_REWARDS = {
     1: 10,
@@ -111,9 +114,17 @@ TICKET_TYPES = {
     },
 }
 
+# Anti-Link: checked on every guild message, in every channel.
+# Includes common URL forms even when users omit http/https.
 LINK_RE = re.compile(
-    r"(https?://|www\.|discord\.gg/|discord(?:app)?\.com/invite/)",
-    re.I
+    r"(?ix)"
+    r"(?:"
+    r"https?://\S+"
+    r"|www\.\S+"
+    r"|discord\.gg/\S+"
+    r"|discord(?:app)?\.com/invite/\S+"
+    r"|(?:^|\s)(?:[a-z0-9-]+\.)+(?:com|net|org|gg|co\.il|il|me|io|dev|xyz|site|store|shop)(?:/\S*)?"
+    r")"
 )
 
 GREETINGS = {
@@ -212,9 +223,17 @@ CREATE TABLE IF NOT EXISTS drops (
     guild_id INTEGER NOT NULL,
     reward TEXT NOT NULL,
     xp_reward INTEGER NOT NULL DEFAULT 0,
-    ended INTEGER NOT NULL DEFAULT 0
+    ended INTEGER NOT NULL DEFAULT 0,
+    winner_id INTEGER
 );
 """)
+
+# Migration for older bot_data.db files.
+try:
+    conn.execute("ALTER TABLE drops ADD COLUMN winner_id INTEGER")
+    conn.commit()
+except sqlite3.OperationalError:
+    pass
 
 conn.commit()
 
@@ -296,7 +315,6 @@ async def ensure_log_channel(guild, name):
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=False
             ),
-
             me: discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
@@ -403,11 +421,12 @@ def get_xp(user_id):
         "SELECT xp FROM xp WHERE user_id = ?",
         (user_id,)
     )
-
     return int(row["xp"]) if row else 0
 
 
 def set_xp(user_id, amount):
+    amount = max(0, int(amount))
+
     db_run(
         """
         INSERT INTO xp(user_id, xp)
@@ -415,25 +434,51 @@ def set_xp(user_id, amount):
         ON CONFLICT(user_id)
         DO UPDATE SET xp=excluded.xp
         """,
-        (user_id, max(0, int(amount)))
+        (user_id, amount)
     )
+
+    # Verify the exact value actually stored.
+    return get_xp(user_id)
 
 
 def add_xp(user_id, amount):
-    new = get_xp(user_id) + int(amount)
-    set_xp(user_id, new)
-    return new
+    amount = int(amount)
+
+    db_run(
+        """
+        INSERT INTO xp(user_id, xp)
+        VALUES(?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET xp=xp+excluded.xp
+        """,
+        (user_id, amount)
+    )
+
+    return get_xp(user_id)
 
 
 def remove_xp(user_id, amount):
-    new = max(
-        0,
-        get_xp(user_id) - int(amount)
+    amount = max(0, int(amount))
+
+    db_run(
+        """
+        INSERT INTO xp(user_id, xp)
+        VALUES(?, 0)
+        ON CONFLICT(user_id) DO NOTHING
+        """,
+        (user_id,)
     )
 
-    set_xp(user_id, new)
+    db_run(
+        """
+        UPDATE xp
+        SET xp=MAX(0, xp-?)
+        WHERE user_id=?
+        """,
+        (amount, user_id)
+    )
 
-    return new
+    return get_xp(user_id)
 
 
 def get_warnings(user_id):
@@ -441,7 +486,6 @@ def get_warnings(user_id):
         "SELECT warnings FROM warnings WHERE user_id=?",
         (user_id,)
     )
-
     return int(row["warnings"]) if row else 0
 
 
@@ -652,9 +696,54 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # Staff mention protection
-    if not is_staff(member):
+    # =====================================================
+    # ANTI-LINK
+    # Works in EVERY channel of EVERY guild the bot is in.
+    # Staff are exempt.
+    # =====================================================
+    if (
+        not is_staff(member)
+        and LINK_RE.search(message.content or "")
+    ):
+        try:
+            await message.delete(
+                reason="Anti-Link"
+            )
+        except discord.Forbidden:
+            print(
+                f"Anti-Link: missing Manage Messages in "
+                f"{message.guild.name} / #{message.channel.name}"
+            )
+        except discord.HTTPException as e:
+            print(f"Anti-Link delete error: {e}")
 
+        amount, action = await apply_warning(
+            message.guild,
+            member,
+            "שליחת קישור אסורה בשרת.",
+            source="Anti-Link",
+        )
+
+        try:
+            await message.channel.send(
+                (
+                    f"❌ {member.mention}, אסור לשלוח קישורים בשרת.\n"
+                    f"⚠️ אזהרה #{amount} • {action}"
+                ),
+                delete_after=8,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True
+                ),
+            )
+        except discord.HTTPException:
+            pass
+
+        return
+
+    # =====================================================
+    # STAFF MENTION PROTECTION
+    # =====================================================
+    if not is_staff(member):
         mentioned_staff_role = any(
             role.name.upper() in STAFF_ROLES
             for role in message.role_mentions
@@ -667,7 +756,6 @@ async def on_message(message):
         )
 
         if mentioned_staff_role or mentioned_staff_user:
-
             try:
                 await message.delete(
                     reason="Mention protection"
@@ -695,42 +783,6 @@ async def on_message(message):
 
             return
 
-    # Anti-link
-    if (
-        not is_staff(member)
-        and LINK_RE.search(message.content or "")
-    ):
-
-        try:
-            await message.delete(
-                reason="Anti-Link"
-            )
-        except discord.HTTPException:
-            pass
-
-        amount, action = await apply_warning(
-            message.guild,
-            member,
-            "שליחת קישור אסורה בשרת.",
-            source="Anti-Link",
-        )
-
-        try:
-            await message.channel.send(
-                (
-                    f"❌ {member.mention}, אסור לשלוח קישורים בשרת.\n"
-                    f"⚠️ אזהרה #{amount} • {action}"
-                ),
-                delete_after=8,
-                allowed_mentions=discord.AllowedMentions(
-                    users=True
-                ),
-            )
-        except discord.HTTPException:
-            pass
-
-        return
-
     # Greetings
     content = (message.content or "").strip()
 
@@ -757,7 +809,9 @@ async def on_message(message):
     # Anti-spam
     if not is_staff(member):
         now = time.time()
-        history = spam_tracker[member.id]
+        history = spam_tracker[
+            (message.guild.id, member.id)
+        ]
 
         history.append(now)
 
@@ -768,7 +822,6 @@ async def on_message(message):
             history.popleft()
 
         if len(history) >= SPAM_MESSAGE_LIMIT:
-
             if bot_can_moderate(
                 message.guild,
                 member
@@ -803,8 +856,9 @@ async def on_message(message):
 
     # XP
     now = time.time()
+    cooldown_key = (message.guild.id, member.id)
     last = xp_cooldowns.get(
-        member.id,
+        cooldown_key,
         0
     )
 
@@ -820,7 +874,7 @@ async def on_message(message):
             XP_PER_MESSAGE * multiplier
         )
 
-        xp_cooldowns[member.id] = now
+        xp_cooldowns[cooldown_key] = now
 
     await bot.process_commands(message)
 
@@ -918,11 +972,12 @@ async def on_member_join(member):
             title="🦊 ברוכים הבאים ל-Foxes!",
             description=(
                 f"שלום {member.mention}!\n\n"
-                f"אתה החבר ה־**"
-                f"{member.guild.member_count:,}"
-                f"** בשרת.\n\n"
-                "🔐 לחצו על **אימות** כדי לקבל גישה לשרת.\n"
-                "🔔 אפשר לקבל גם את רול העדכונים וההגרלות."
+                f"ברוכים הבאים ל־**Foxes**.\n"
+                f"אתה החבר ה־**{member.guild.member_count:,}** בשרת.\n\n"
+                f"📜 קראו את {f'<#{get_channel(member.guild, RULES_CHANNEL_NAME).id}>' if get_channel(member.guild, RULES_CHANNEL_NAME) else f'`{RULES_CHANNEL_NAME}`'}.\n"
+                "🔔 בחרו בפאנל למטה אם תרצו לקבל עדכונים.\n"
+                "🎉 אפשר לבחור גם התראות על הגרלות.\n\n"
+                "🦊 תהנו ב-Foxes!"
             ),
             color=discord.Color.blurple(),
         )
@@ -937,8 +992,12 @@ async def on_member_join(member):
 
         try:
             await channel.send(
-                embed=embed,
-                view=WelcomeView()
+                embed=embed
+            )
+
+            await channel.send(
+                embed=role_panel_embed(member.guild),
+                view=RoleSelectionView()
             )
         except discord.HTTPException as e:
             print(
@@ -1000,71 +1059,62 @@ async def on_member_update(before, after):
 
 
 # =========================================================
-# WELCOME
+# WELCOME / ROLES PANEL
 # =========================================================
 
-class WelcomeView(discord.ui.View):
+def role_panel_embed(guild):
+    rules_channel = get_channel(
+        guild,
+        RULES_CHANNEL_NAME
+    )
+
+    rules_text = (
+        f"{rules_channel.mention}"
+        if rules_channel
+        else f"`{RULES_CHANNEL_NAME}`"
+    )
+
+    return discord.Embed(
+        title="📜 חוקים ורולים",
+        description=(
+            f"קודם כל עברו על החוקים: {rules_text}\n\n"
+            "🔔 **עדכונים** — קבלו התראות ועדכונים מהשרת.\n"
+            "🎉 **הגרלות** — קבלו התראות על הגרלות.\n\n"
+            "אפשר לבחור **אחד מהם או את שניהם**.\n"
+            "לחיצה נוספת על אותו כפתור תסיר את הרול."
+        ),
+        color=discord.Color.blurple()
+    )
+
+
+class RoleSelectionView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="אימות",
-        emoji="🔐",
-        style=discord.ButtonStyle.success,
-        custom_id="welcome_verify"
-    )
-    async def verify(self, interaction, button):
+    async def toggle_role(
+        self,
+        interaction,
+        role_name,
+        label
+    ):
         role = get_role(
             interaction.guild,
-            VERIFIED_ROLE_NAME
+            role_name
         )
 
         if not role:
             return await interaction.response.send_message(
-                f"❌ לא נמצא הרול `{VERIFIED_ROLE_NAME}`.",
+                f"❌ לא נמצא הרול `{role_name}`. צור אותו קודם.",
                 ephemeral=True
             )
 
-        if role in interaction.user.roles:
+        me = interaction.guild.me
+
+        if me and role >= me.top_role:
             return await interaction.response.send_message(
-                "✅ אתה כבר מאומת.",
-                ephemeral=True
-            )
-
-        try:
-            await interaction.user.add_roles(
-                role,
-                reason="Verification"
-            )
-
-            await interaction.response.send_message(
-                f"✅ אומת בהצלחה וקיבלת את {role.mention}.",
-                ephemeral=True
-            )
-
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "❌ לא הצלחתי לתת את הרול. "
-                "בדוק שהרול של הבוט מעל Member.",
-                ephemeral=True
-            )
-
-    @discord.ui.button(
-        label="עדכונים והגרלות",
-        emoji="🔔",
-        style=discord.ButtonStyle.primary,
-        custom_id="welcome_updates"
-    )
-    async def updates(self, interaction, button):
-        role = get_role(
-            interaction.guild,
-            UPDATES_ROLE_NAME
-        )
-
-        if not role:
-            return await interaction.response.send_message(
-                f"❌ לא נמצא הרול `{UPDATES_ROLE_NAME}`.",
+                f"❌ הבוט לא יכול לנהל את הרול `{role.name}`. "
+                "שים את רול הבוט מעל הרול הזה.",
                 ephemeral=True
             )
 
@@ -1072,38 +1122,71 @@ class WelcomeView(discord.ui.View):
             if role in interaction.user.roles:
                 await interaction.user.remove_roles(
                     role,
-                    reason="Updates role removed"
+                    reason="Role selection"
                 )
 
-                text = (
-                    "🔕 הרול של העדכונים וההגרלות הוסר."
+                await interaction.response.send_message(
+                    f"🔕 רול **{label}** הוסר ממך.",
+                    ephemeral=True
                 )
-
             else:
                 await interaction.user.add_roles(
                     role,
-                    reason="Updates role added"
+                    reason="Role selection"
                 )
 
-                text = (
-                    "🔔 קיבלת את רול העדכונים וההגרלות!"
+                await interaction.response.send_message(
+                    f"🔔 קיבלת את רול **{label}**!",
+                    ephemeral=True
                 )
 
-            await interaction.response.send_message(
-                text,
-                ephemeral=True
-            )
+        except discord.HTTPException as e:
+            print(f"Role selection error: {e}")
 
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "❌ לא הצלחתי לשנות את הרול.",
-                ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ לא הצלחתי לשנות את הרול.",
+                    ephemeral=True
+                )
+
+    @discord.ui.button(
+        label="עדכונים",
+        emoji="🔔",
+        style=discord.ButtonStyle.primary,
+        custom_id="role_updates_toggle"
+    )
+    async def updates(
+        self,
+        interaction,
+        button
+    ):
+        await self.toggle_role(
+            interaction,
+            UPDATES_ROLE_NAME,
+            "עדכונים"
+        )
+
+    @discord.ui.button(
+        label="הגרלות",
+        emoji="🎉",
+        style=discord.ButtonStyle.success,
+        custom_id="role_giveaways_toggle"
+    )
+    async def giveaways(
+        self,
+        interaction,
+        button
+    ):
+        await self.toggle_role(
+            interaction,
+            GIVEAWAYS_ROLE_NAME,
+            "הגרלות"
+        )
 
 
 @bot.tree.command(
     name="welcome",
-    description="שלח את פאנל ה-Welcome",
+    description="שלח את פאנל החוקים והרולים",
     guild=GUILD
 )
 @app_commands.default_permissions(
@@ -1112,7 +1195,7 @@ class WelcomeView(discord.ui.View):
 async def welcome_command(interaction):
     if not is_staff(interaction.user):
         return await interaction.response.send_message(
-            "❌ רק הצוות יכול לשלוח את פאנל ה-Welcome.",
+            "❌ רק הצוות יכול לשלוח את הפאנל.",
             ephemeral=True
         )
 
@@ -1127,28 +1210,13 @@ async def welcome_command(interaction):
             ephemeral=True
         )
 
-    embed = discord.Embed(
-        title="👋 ברוכים הבאים ל-Foxes!",
-        description=(
-            "ברוכים הבאים לשרת!\n\n"
-            "🔐 **אימות** — קבלו גישה לשרת.\n\n"
-            "🔔 **עדכונים והגרלות** — קבלו התראות.\n\n"
-            "🦊 תהנו ב-Foxes!"
-        ),
-        color=discord.Color.blurple(),
-    )
-
-    embed.set_footer(
-        text="Foxes • Welcome"
-    )
-
     await channel.send(
-        embed=embed,
-        view=WelcomeView()
+        embed=role_panel_embed(interaction.guild),
+        view=RoleSelectionView()
     )
 
     await interaction.response.send_message(
-        f"✅ פאנל ה-Welcome נשלח ל-{channel.mention}.",
+        f"✅ פאנל החוקים והרולים נשלח ל-{channel.mention}.",
         ephemeral=True
     )
 
@@ -1246,7 +1314,6 @@ async def staff_check(interaction):
             "❌ אין לך הרשאה.",
             ephemeral=True
         )
-
         return False
 
     return True
@@ -1376,14 +1443,15 @@ async def setxp_command(
             ephemeral=True
         )
 
-    set_xp(
+    actual = set_xp(
         user.id,
         amount
     )
 
     await interaction.response.send_message(
         f"✅ ה-XP של {user.mention} "
-        f"נקבע ל־**{amount:,} XP**."
+        f"נקבע ל־**{actual:,} XP**.\n"
+        f"🔎 נבדק ונשמר במסד הנתונים: **{get_xp(user.id):,} XP**"
     )
 
     await send_mod_log(
@@ -1392,7 +1460,7 @@ async def setxp_command(
         (
             f"👤 משתמש: {user.mention}\n"
             f"👮 צוות: {interaction.user.mention}\n"
-            f"⭐ **{amount:,} XP**"
+            f"⭐ **{actual:,} XP**"
         )
     )
 
@@ -1462,10 +1530,33 @@ class XPShopButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        remove_xp(
-            interaction.user.id,
-            self.cost
+        # Atomic purchase: deduct only if the user still
+        # has enough XP. This also keeps the shop and /setxp
+        # on the exact same database value.
+        count, _ = db_run(
+            """
+            UPDATE xp
+            SET xp=xp-?
+            WHERE user_id=?
+            AND xp>=?
+            """,
+            (
+                self.cost,
+                interaction.user.id,
+                self.cost
+            )
         )
+
+        if count == 0:
+            current_xp = get_xp(interaction.user.id)
+
+            return await interaction.response.send_message(
+                (
+                    "❌ ה-XP השתנה לפני הרכישה.\n"
+                    f"⭐ יש לך כרגע: **{current_xp:,} XP**"
+                ),
+                ephemeral=True
+            )
 
         try:
             await interaction.user.add_roles(
@@ -2144,7 +2235,6 @@ class TicketControlView(discord.ui.View):
             timeout=None
         )
 
-        # תיקון חשוב:
         self.channel_id = channel_id
 
         take = discord.ui.Button(
@@ -2342,7 +2432,6 @@ async def create_ticket(
         )
 
     async with ticket_lock:
-
         existing = next(
             (
                 c
@@ -2979,7 +3068,6 @@ async def finish_giveaway(row):
                 ),
                 view=None
             )
-
         return
 
     selected = random.sample(
@@ -3052,7 +3140,7 @@ class DropView(discord.ui.View):
         self.message_id = message_id
 
         b = discord.ui.Button(
-            label="תפוס את ה-Drop!",
+            label="קבלה",
             emoji="🎁",
             style=discord.ButtonStyle.success,
             custom_id=f"drop_claim_{message_id}"
@@ -3062,59 +3150,97 @@ class DropView(discord.ui.View):
         self.add_item(b)
 
     async def claim(self, interaction):
+        # Atomically select the first claimant.
+        # Only one interaction can change ended 0 -> 1.
+        count, _ = db_run(
+            """
+            UPDATE drops
+            SET ended=1, winner_id=?
+            WHERE message_id=?
+            AND ended=0
+            """,
+            (
+                interaction.user.id,
+                self.message_id
+            )
+        )
+
+        if count == 0:
+            return await interaction.response.send_message(
+                "❌ הדרופ כבר נלקח.",
+                ephemeral=True
+            )
+
         row = db_one(
             """
-            SELECT reward,xp_reward,ended
+            SELECT xp_reward
             FROM drops
             WHERE message_id=?
             """,
             (self.message_id,)
         )
 
-        if not row or row["ended"]:
+        if not row:
             return await interaction.response.send_message(
-                "❌ ה-Drop כבר נתפס.",
+                "❌ לא נמצא מידע על הדרופ.",
                 ephemeral=True
             )
 
-        count, _ = db_run(
-            """
-            UPDATE drops
-            SET ended=1
-            WHERE message_id=?
-            AND ended=0
-            """,
-            (self.message_id,)
-        )
-
-        if count == 0:
-            return await interaction.response.send_message(
-                "❌ מישהו כבר תפס את ה-Drop.",
-                ephemeral=True
-            )
-
-        xp_reward = row["xp_reward"]
+        xp_reward = int(row["xp_reward"])
 
         new = add_xp(
             interaction.user.id,
             xp_reward
         )
 
-        await interaction.response.send_message(
-            (
-                f"🎉 {interaction.user.mention} "
-                "תפס את ה-Drop!\n\n"
-                f"⭐ קיבלת **{xp_reward:,} XP**!\n"
-                f"📊 XP נוכחי: **{new:,} XP**"
-            )
-        )
+        # Disable the claim button on the public message.
+        for item in self.children:
+            item.disabled = True
 
         try:
-            await interaction.message.edit(
-                view=None
+            old_embed = (
+                interaction.message.embeds[0]
+                if interaction.message.embeds
+                else discord.Embed(
+                    title="🎁 XP DROP!",
+                    color=discord.Color.green()
+                )
             )
+
+            embed = old_embed.copy()
+            embed.title = "🎁 XP DROP — נתפס!"
+            embed.description = (
+                f"🏆 **הזוכה:** {interaction.user.mention}\n"
+                f"⭐ **הפרס:** {xp_reward:,} XP"
+            )
+            embed.color = discord.Color.gold()
+
+            await interaction.response.edit_message(
+                embed=embed,
+                view=self
+            )
+
+            await interaction.followup.send(
+                (
+                    f"🎉 זכית בדרופ!\n"
+                    f"⭐ קיבלת **{xp_reward:,} XP**!\n"
+                    f"📊 XP נוכחי: **{new:,} XP**"
+                ),
+                ephemeral=True
+            )
+
         except discord.HTTPException:
-            pass
+            try:
+                await interaction.response.send_message(
+                    (
+                        f"🎉 זכית בדרופ!\n"
+                        f"⭐ קיבלת **{xp_reward:,} XP**!\n"
+                        f"📊 XP נוכחי: **{new:,} XP**"
+                    ),
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
 
         await send_mod_log(
             interaction.guild,
@@ -3162,7 +3288,8 @@ async def drop_command(
     )
 
     await interaction.response.send_message(
-        embed=embed
+        embed=embed,
+        view=None
     )
 
     message = await interaction.original_response()
@@ -3174,9 +3301,11 @@ async def drop_command(
             channel_id,
             guild_id,
             reward,
-            xp_reward
+            xp_reward,
+            ended,
+            winner_id
         )
-        VALUES(?,?,?,?,?)
+        VALUES(?,?,?,?,?,0,NULL)
         """,
         (
             message.id,
@@ -3542,7 +3671,7 @@ async def on_ready():
         XPShopView(),
         SuggestionPanelView(),
         TicketView(),
-        WelcomeView(),
+        RoleSelectionView(),
         DailyView(),
         PollView()
     ]:
@@ -3613,7 +3742,7 @@ async def on_ready():
                 f"Giveaway restore error: {e}"
             )
 
-    # Restore drops
+    # Restore active drops
     for row in db_all(
         """
         SELECT message_id
@@ -3690,3 +3819,16 @@ if not DISCORD_TOKEN:
     )
 
 bot.run(DISCORD_TOKEN)
+'''
+
+path = "/mnt/data/bot.py"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(code)
+
+# Basic syntax validation before giving the file to the user.
+import ast
+ast.parse(code)
+
+print(path)
+print(f"{len(code):,} characters")
+print("Syntax OK")
