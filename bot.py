@@ -7,6 +7,7 @@ import time
 import re
 import asyncio
 import random
+from datetime import timedelta
 
 # =========================
 # SETTINGS
@@ -20,6 +21,7 @@ GUILD = discord.Object(id=GUILD_ID)
 
 WELCOME_CHANNEL_NAME = "ברוכים-הבאים-👋"
 RULES_CHANNEL_NAME = "📜・חוקים"
+SUGGESTIONS_CHANNEL_NAME = "💡・הצעות"
 
 UPDATES_ROLE_NAME = "🔔・עדכונים"
 GIVEAWAYS_ROLE_NAME = "🎉・הגרלות"
@@ -34,6 +36,23 @@ STAFF_ROLES = {
     "HEAD ADMIN",
     "KING FOX"
 }
+
+# =========================
+# DAILY SETTINGS
+# =========================
+
+DAILY_REWARDS = {
+    1: 10,
+    2: 20,
+    3: 30,
+    4: 40,
+    5: 50,
+    6: 60,
+    7: 100
+}
+
+DAILY_COOLDOWN = 86400       # 24 שעות
+DAILY_RESET_TIME = 172800    # 48 שעות
 
 # =========================
 # DATABASE
@@ -54,6 +73,14 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS shop_items (
     role_id INTEGER PRIMARY KEY,
     price INTEGER NOT NULL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS daily_users (
+    user_id INTEGER PRIMARY KEY,
+    streak INTEGER DEFAULT 0,
+    last_claim INTEGER DEFAULT 0
 )
 """)
 
@@ -315,6 +342,22 @@ def add_xp(user_id, amount):
     db.commit()
 
 
+def remove_xp(user_id, amount):
+
+    ensure_user(user_id)
+
+    cursor.execute(
+        """
+        UPDATE users
+        SET xp = MAX(0, xp - ?)
+        WHERE user_id = ?
+        """,
+        (amount, user_id)
+    )
+
+    db.commit()
+
+
 def get_warnings(user_id):
 
     ensure_user(user_id)
@@ -341,6 +384,55 @@ def add_warning(user_id):
     db.commit()
 
     return get_warnings(user_id)
+
+
+# =========================
+# DAILY DATABASE
+# =========================
+
+def get_daily_data(user_id):
+
+    cursor.execute(
+        """
+        SELECT streak, last_claim
+        FROM daily_users
+        WHERE user_id = ?
+        """,
+        (user_id,)
+    )
+
+    result = cursor.fetchone()
+
+    if result is None:
+        return 0, 0
+
+    return result[0], result[1]
+
+
+def save_daily_data(user_id, streak, last_claim):
+
+    cursor.execute(
+        """
+        INSERT INTO daily_users (
+            user_id,
+            streak,
+            last_claim
+        )
+        VALUES (?, ?, ?)
+
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            streak = excluded.streak,
+            last_claim = excluded.last_claim
+        """,
+        (
+            user_id,
+            streak,
+            last_claim
+        )
+    )
+
+    db.commit()
 
 
 # =========================
@@ -833,7 +925,7 @@ async def shopadd_command(
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ רק צוות יכול להשתמש בזה.",
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
             ephemeral=True
         )
 
@@ -874,7 +966,7 @@ async def shopremove_command(
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ רק צוות יכול להשתמש בזה.",
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
             ephemeral=True
         )
 
@@ -886,6 +978,266 @@ async def shopremove_command(
 
     await interaction.response.send_message(
         f"✅ **{role.name}** הוסר מהחנות.",
+        ephemeral=True
+    )
+
+
+# =========================
+# DAILY
+# =========================
+
+@bot.tree.command(
+    name="daily",
+    description="קבל את הפרס היומי שלך"
+)
+async def daily_command(interaction):
+
+    user_id = interaction.user.id
+    now = int(time.time())
+
+    streak, last_claim = get_daily_data(user_id)
+
+    # כבר לקח היום
+    if last_claim and now - last_claim < DAILY_COOLDOWN:
+
+        remaining = DAILY_COOLDOWN - (now - last_claim)
+
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+
+        embed = discord.Embed(
+            title="🎁 Daily",
+            description=(
+                "❌ **כבר לקחת את ה־Daily שלך היום.**\n\n"
+                f"⏰ תחזור בעוד **{hours} שעות ו־{minutes} דקות**."
+            ),
+            color=discord.Color.orange()
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+        return
+
+    # אם עברו 48 שעות - איפוס רצף
+    if last_claim and now - last_claim >= DAILY_RESET_TIME:
+        streak = 0
+
+    # היום הבא
+    day = (streak % 7) + 1
+
+    reward = DAILY_REWARDS[day]
+
+    add_xp(
+        user_id,
+        reward
+    )
+
+    save_daily_data(
+        user_id,
+        day,
+        now
+    )
+
+    daily_text = ""
+
+    for current_day in range(1, 8):
+
+        current_reward = DAILY_REWARDS[current_day]
+
+        if current_day < day:
+
+            daily_text += (
+                f"🟢 יום {current_day} — "
+                f"**{current_reward} XP** ✓\n"
+            )
+
+        elif current_day == day:
+
+            daily_text += (
+                f"🟢 יום {current_day} — "
+                f"**{current_reward} XP** ← **היום**\n"
+            )
+
+        else:
+
+            daily_text += (
+                f"⚪ יום {current_day} — "
+                f"**{current_reward} XP**\n"
+            )
+
+    embed = discord.Embed(
+        title="🎁 Daily Rewards",
+        description=(
+            f"🎉 **קיבלת {reward} XP!**\n\n"
+            f"🔥 הרצף שלך: **יום {day}/7**"
+        ),
+        color=discord.Color.green()
+    )
+
+    embed.add_field(
+        name="📅 7 ימים",
+        value=daily_text,
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 ה־XP שלך",
+        value=f"**{get_xp(user_id):,} XP**",
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Foxes • Daily"
+    )
+
+    # פרטי לחלוטין
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# =========================
+# XP STAFF COMMANDS
+# =========================
+
+@bot.tree.command(
+    name="addxp",
+    description="הוספת XP למשתמש"
+)
+@app_commands.describe(
+    member="המשתמש",
+    amount="כמות XP"
+)
+async def addxp_command(
+    interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 1000000]
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
+            ephemeral=True
+        )
+
+        return
+
+    add_xp(
+        member.id,
+        amount
+    )
+
+    await interaction.response.send_message(
+        f"✅ נוספו **{amount:,} XP** ל־{member.mention}.\n\n"
+        f"📊 ה־XP החדש שלו: **{get_xp(member.id):,} XP**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="removexp",
+    description="הורדת XP ממשתמש"
+)
+@app_commands.describe(
+    member="המשתמש",
+    amount="כמות XP"
+)
+async def removexp_command(
+    interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 1000000]
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
+            ephemeral=True
+        )
+
+        return
+
+    before = get_xp(
+        member.id
+    )
+
+    remove_xp(
+        member.id,
+        amount
+    )
+
+    after = get_xp(
+        member.id
+    )
+
+    removed = before - after
+
+    await interaction.response.send_message(
+        f"✅ הורדו **{removed:,} XP** מ־{member.mention}.\n\n"
+        f"📊 ה־XP החדש שלו: **{after:,} XP**",
+        ephemeral=True
+    )
+
+
+# =========================
+# SUGGESTION
+# =========================
+
+@bot.tree.command(
+    name="suggestion",
+    description="שליחת הצעה לשרת"
+)
+@app_commands.describe(
+    suggestion="ההצעה שלך"
+)
+async def suggestion_command(
+    interaction,
+    suggestion: str
+):
+
+    channel = get_channel(
+        interaction.guild,
+        SUGGESTIONS_CHANNEL_NAME
+    )
+
+    if channel is None:
+
+        await interaction.response.send_message(
+            f"❌ חדר ההצעות `{SUGGESTIONS_CHANNEL_NAME}` לא נמצא.",
+            ephemeral=True
+        )
+
+        return
+
+    embed = discord.Embed(
+        title="💡 הצעה חדשה",
+        description=suggestion,
+        color=discord.Color.blurple()
+    )
+
+    embed.set_author(
+        name=interaction.user.display_name,
+        icon_url=interaction.user.display_avatar.url
+    )
+
+    embed.set_footer(
+        text=f"Foxes • Suggestion • ID: {interaction.user.id}"
+    )
+
+    message = await channel.send(
+        embed=embed
+    )
+
+    await message.add_reaction("👍")
+    await message.add_reaction("👎")
+
+    await interaction.response.send_message(
+        f"✅ ההצעה שלך נשלחה ל־{channel.mention}!",
         ephemeral=True
     )
 
@@ -1022,8 +1374,7 @@ class FriendSelect(discord.ui.UserSelect):
             f"{opponent.mention}\n\n"
             f"🎮 **{self.challenger.display_name}** "
             f"הזמין אותך ל־**{game_name}**!\n\n"
-            "לחץ על אישור כדי להתחיל."
-            ,
+            "לחץ על אישור כדי להתחיל.",
             view=GameInviteView(
                 self.game_type,
                 self.challenger,
@@ -1419,22 +1770,13 @@ class RouletteView(discord.ui.View):
             try:
 
                 await loser.timeout(
-                    discord.utils.utcnow()
-                    + discord.timedelta(seconds=60),
+                    timedelta(seconds=60),
                     reason="הפסיד ברולטה רוסית"
                 )
 
             except:
 
-                # fallback for discord.py versions
-                try:
-                    await loser.edit(
-                        timed_out_until=discord.utils.utcnow()
-                        + discord.timedelta(seconds=60),
-                        reason="הפסיד ברולטה רוסית"
-                    )
-                except:
-                    pass
+                pass
 
             await interaction.response.edit_message(
                 content=(
@@ -1625,6 +1967,9 @@ class PublicDiceView(discord.ui.View):
             key=lambda x: x[1],
             reverse=True
         )
+
+        if not results:
+            return
 
         text = "🎲 **תוצאות הקובייה**\n\n"
 
@@ -2370,7 +2715,7 @@ async def warn_command(
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ אין לך הרשאה.",
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
             ephemeral=True
         )
 
@@ -2406,7 +2751,7 @@ async def ticket_command(interaction):
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ רק צוות יכול לשלוח את הפאנל.",
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
             ephemeral=True
         )
 
@@ -2435,7 +2780,7 @@ async def welcome_command(interaction):
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ רק צוות יכול להשתמש בזה.",
+            "❌ רק מודים ומעלה יכולים להשתמש בפקודה הזאת.",
             ephemeral=True
         )
 
@@ -2514,13 +2859,13 @@ async def on_message(message):
 
 @bot.tree.command(
     name="help",
-    description="הצגת כל פקודות הבוט"
+    description="הצגת הפקודות שאתה יכול להשתמש בהן"
 )
 async def help_command(interaction):
 
     embed = discord.Embed(
         title="🦊 Foxes Bot — פקודות",
-        description="כל הפקודות הזמינות:",
+        description="הפקודות הזמינות עבורך:",
         color=discord.Color.blurple()
     )
 
@@ -2530,7 +2875,7 @@ async def help_command(interaction):
             "`/game` — פתיחת חדר המשחקים\n"
             "🪙 Coin Flip — 1v1\n"
             "✂️ אבן נייר ומספריים — 1v1\n"
-            "🔫 רולטה רוסית — 1v1 + Timeout\n"
+            "🔫 רולטה רוסית — 1v1\n"
             "🎲 קובייה — פתוח לכולם\n"
             "🔢 Guess — פתוח לכולם"
         ),
@@ -2540,9 +2885,7 @@ async def help_command(interaction):
     embed.add_field(
         name="🛒 חנות",
         value=(
-            "`/shop` — פתיחת החנות\n"
-            "`/shopadd` — הוספת רול [צוות]\n"
-            "`/shopremove` — הסרת רול [צוות]"
+            "`/shop` — פתיחת החנות"
         ),
         inline=False
     )
@@ -2557,20 +2900,39 @@ async def help_command(interaction):
     )
 
     embed.add_field(
-        name="🎫 טיקטים",
+        name="🎁 Daily",
         value=(
-            "`/ticket` — פאנל טיקטים\n"
-            "`/welcome` — פאנל רולים"
+            "`/daily` — קבלת הפרס היומי והרצף שלך"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="🛡️ ניהול",
+        name="💡 הצעות",
         value=(
-            "`/warn` — מתן אזהרה"
+            "`/suggestion` — שליחת הצעה לשרת"
         ),
         inline=False
+    )
+
+    if is_staff(interaction.user):
+
+        embed.add_field(
+            name="🛡️ פקודות צוות",
+            value=(
+                "`/warn` — מתן אזהרה\n"
+                "`/addxp` — הוספת XP\n"
+                "`/removexp` — הורדת XP\n"
+                "`/shopadd` — הוספת רול לחנות\n"
+                "`/shopremove` — הסרת רול מהחנות\n"
+                "`/ticket` — שליחת פאנל טיקטים\n"
+                "`/welcome` — שליחת פאנל רולים"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(
+        text="Foxes • Help"
     )
 
     await interaction.response.send_message(
