@@ -6,6 +6,7 @@ import sqlite3
 import time
 import re
 import asyncio
+import random
 
 # =========================
 # SETTINGS
@@ -43,6 +44,13 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     xp INTEGER DEFAULT 0,
     warnings INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS shop_items (
+    role_id INTEGER PRIMARY KEY,
+    price INTEGER NOT NULL
 )
 """)
 
@@ -122,6 +130,18 @@ def get_xp(user_id):
     return result[0] if result else 0
 
 
+def add_xp(user_id, amount):
+
+    ensure_user(user_id)
+
+    cursor.execute(
+        "UPDATE users SET xp = xp + ? WHERE user_id = ?",
+        (amount, user_id)
+    )
+
+    db.commit()
+
+
 def get_warnings(user_id):
 
     ensure_user(user_id)
@@ -136,18 +156,6 @@ def get_warnings(user_id):
     return result[0] if result else 0
 
 
-def add_xp(user_id, amount):
-
-    ensure_user(user_id)
-
-    cursor.execute(
-        "UPDATE users SET xp = xp + ? WHERE user_id = ?",
-        (amount, user_id)
-    )
-
-    db.commit()
-
-
 def add_warning(user_id):
 
     ensure_user(user_id)
@@ -160,6 +168,51 @@ def add_warning(user_id):
     db.commit()
 
     return get_warnings(user_id)
+
+
+# =========================
+# SHOP DATABASE
+# =========================
+
+def get_shop_items():
+
+    cursor.execute(
+        "SELECT role_id, price FROM shop_items ORDER BY price ASC"
+    )
+
+    return cursor.fetchall()
+
+
+def add_shop_item(role_id, price):
+
+    cursor.execute(
+        "INSERT OR REPLACE INTO shop_items (role_id, price) VALUES (?, ?)",
+        (role_id, price)
+    )
+
+    db.commit()
+
+
+def remove_shop_item(role_id):
+
+    cursor.execute(
+        "DELETE FROM shop_items WHERE role_id = ?",
+        (role_id,)
+    )
+
+    db.commit()
+
+
+def get_shop_price(role_id):
+
+    cursor.execute(
+        "SELECT price FROM shop_items WHERE role_id = ?",
+        (role_id,)
+    )
+
+    result = cursor.fetchone()
+
+    return result[0] if result else None
 
 
 # =========================
@@ -200,8 +253,7 @@ class RoleSelectionView(discord.ui.View):
 
         if me and role >= me.top_role:
             await interaction.response.send_message(
-                f"❌ הבוט לא יכול לנהל את הרול **{role.name}**.\n"
-                f"שים את הרול של הבוט מעל הרול הזה.",
+                f"❌ הבוט לא יכול לנהל את הרול **{role.name}**.",
                 ephemeral=True
             )
             return
@@ -284,7 +336,7 @@ class RoleSelectionView(discord.ui.View):
 
 
 # =========================
-# WELCOME PANEL
+# WELCOME
 # =========================
 
 def create_role_panel_embed(guild):
@@ -309,7 +361,7 @@ def create_role_panel_embed(guild):
             "🎉 **הגרלות**\n"
             "קבלת התראות כאשר מתחילות הגרלות חדשות.\n\n"
             "💡 ניתן לבחור את שניהם או רק אחד מהם.\n"
-            "לחיצה נוספת על כפתור שכבר בחרתם תסיר את הרול.\n\n"
+            "לחיצה נוספת תסיר את הרול.\n\n"
             f"📜 לפני שמתחילים, עברו על החוקים: {rules_text}"
         ),
         color=discord.Color.blue()
@@ -322,55 +374,11 @@ def create_role_panel_embed(guild):
     return embed
 
 
-async def send_role_panel(guild):
-
-    channel = get_channel(
-        guild,
-        WELCOME_CHANNEL_NAME
-    )
-
-    if channel is None:
-        print(
-            f"[WELCOME] החדר '{WELCOME_CHANNEL_NAME}' לא נמצא."
-        )
-        return
-
-    try:
-
-        await channel.send(
-            embed=create_role_panel_embed(guild),
-            view=RoleSelectionView()
-        )
-
-        print("[WELCOME] פאנל הרולים נשלח.")
-
-    except discord.Forbidden:
-
-        print(
-            "[WELCOME] אין לבוט הרשאה לשלוח הודעה בחדר."
-        )
-
-    except discord.HTTPException as e:
-
-        print(
-            f"[WELCOME] שגיאה בשליחת פאנל: {e}"
-        )
-
-
-# =========================
-# WELCOME SYSTEM
-# =========================
-
 @bot.event
 async def on_member_join(member):
 
     print(
         f"[WELCOME] משתמש נכנס: {member} ({member.id})"
-    )
-
-    # Anti-raid basic log
-    print(
-        f"[WELCOME] מספר חברים בשרת: {member.guild.member_count}"
     )
 
     channel = get_channel(
@@ -379,11 +387,9 @@ async def on_member_join(member):
     )
 
     if channel is None:
-
         print(
-            f"[WELCOME] ERROR: החדר '{WELCOME_CHANNEL_NAME}' לא נמצא."
+            f"[WELCOME] החדר '{WELCOME_CHANNEL_NAME}' לא נמצא."
         )
-
         return
 
     embed = discord.Embed(
@@ -400,12 +406,10 @@ async def on_member_join(member):
     )
 
     try:
-
         embed.set_thumbnail(
             url=member.display_avatar.url
         )
-
-    except Exception:
+    except:
         pass
 
     embed.set_footer(
@@ -418,23 +422,19 @@ async def on_member_join(member):
             embed=embed
         )
 
-        print(
-            f"[WELCOME] Welcome נשלח עבור {member}"
-        )
-
         await channel.send(
             embed=create_role_panel_embed(member.guild),
             view=RoleSelectionView()
         )
 
         print(
-            "[WELCOME] פאנל הרולים נשלח."
+            f"[WELCOME] Welcome + Role Panel נשלחו עבור {member}"
         )
 
     except discord.Forbidden:
 
         print(
-            "[WELCOME] ERROR: אין לבוט הרשאת Send Messages / Embed Links."
+            "[WELCOME] אין הרשאות לשלוח הודעה."
         )
 
     except discord.HTTPException as e:
@@ -445,13 +445,1193 @@ async def on_member_join(member):
 
 
 # =========================
-# TICKET VIEWS
+# SHOP
+# =========================
+
+class ShopSelect(discord.ui.Select):
+
+    def __init__(self, guild):
+
+        options = []
+
+        for role_id, price in get_shop_items():
+
+            role = guild.get_role(role_id)
+
+            if role is None:
+                continue
+
+            options.append(
+                discord.SelectOption(
+                    label=role.name[:100],
+                    description=f"{price:,} XP",
+                    emoji="🎭",
+                    value=str(role.id)
+                )
+            )
+
+        if not options:
+
+            options.append(
+                discord.SelectOption(
+                    label="אין רולים בחנות",
+                    description="הצוות עדיין לא הוסיף רולים",
+                    value="none"
+                )
+            )
+
+        super().__init__(
+            placeholder="🛒 בחר את הרול שאתה רוצה לקנות...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        value = self.values[0]
+
+        if value == "none":
+
+            await interaction.response.send_message(
+                "❌ אין כרגע רולים בחנות.",
+                ephemeral=True
+            )
+
+            return
+
+        role = interaction.guild.get_role(
+            int(value)
+        )
+
+        if role is None:
+
+            await interaction.response.send_message(
+                "❌ הרול כבר לא קיים בשרת.",
+                ephemeral=True
+            )
+
+            return
+
+        price = get_shop_price(role.id)
+
+        if price is None:
+
+            await interaction.response.send_message(
+                "❌ הרול הזה כבר לא נמצא בחנות.",
+                ephemeral=True
+            )
+
+            return
+
+        if role in interaction.user.roles:
+
+            await interaction.response.send_message(
+                "❌ כבר יש לך את הרול הזה.",
+                ephemeral=True
+            )
+
+            return
+
+        xp = get_xp(
+            interaction.user.id
+        )
+
+        if xp < price:
+
+            await interaction.response.send_message(
+                f"❌ אין לך מספיק XP.\n\n"
+                f"💰 מחיר: **{price:,} XP**\n"
+                f"📊 יש לך: **{xp:,} XP**\n"
+                f"❗ חסרים לך: **{price - xp:,} XP**",
+                ephemeral=True
+            )
+
+            return
+
+        me = interaction.guild.me
+
+        if me and role >= me.top_role:
+
+            await interaction.response.send_message(
+                "❌ הבוט לא יכול לתת את הרול הזה.\n"
+                "שים את הרול של הבוט מעל הרול בחנות.",
+                ephemeral=True
+            )
+
+            return
+
+        try:
+
+            cursor.execute(
+                "UPDATE users SET xp = xp - ? WHERE user_id = ? AND xp >= ?",
+                (
+                    price,
+                    interaction.user.id,
+                    price
+                )
+            )
+
+            if cursor.rowcount == 0:
+
+                db.commit()
+
+                await interaction.response.send_message(
+                    "❌ הרכישה נכשלה כי אין לך מספיק XP.",
+                    ephemeral=True
+                )
+
+                return
+
+            db.commit()
+
+            await interaction.user.add_roles(
+                role,
+                reason="XP Shop Purchase"
+            )
+
+            await interaction.response.send_message(
+                f"✅ **הרכישה הצליחה!**\n\n"
+                f"🎭 רול: **{role.name}**\n"
+                f"💰 מחיר: **{price:,} XP**\n"
+                f"📊 XP שנשאר: **{get_xp(interaction.user.id):,} XP**",
+                ephemeral=True
+            )
+
+        except discord.Forbidden:
+
+            add_xp(
+                interaction.user.id,
+                price
+            )
+
+            await interaction.response.send_message(
+                "❌ הבוט לא הצליח לתת את הרול ולכן ה-XP הוחזר.",
+                ephemeral=True
+            )
+
+        except Exception as e:
+
+            add_xp(
+                interaction.user.id,
+                price
+            )
+
+            print(
+                f"[SHOP ERROR] {e}"
+            )
+
+            await interaction.response.send_message(
+                "❌ אירעה שגיאה ברכישה וה-XP הוחזר.",
+                ephemeral=True
+            )
+
+
+class ShopView(discord.ui.View):
+
+    def __init__(self, guild):
+
+        super().__init__(
+            timeout=300
+        )
+
+        self.add_item(
+            ShopSelect(guild)
+        )
+
+
+def create_shop_embed(guild):
+
+    items = get_shop_items()
+
+    description = (
+        "🛒 **ברוכים הבאים לחנות ה-XP של Foxes!**\n\n"
+        "בחרו את הרול שאתם רוצים לקנות מהתפריט למטה.\n\n"
+        "💡 לאחר הבחירה הבוט יבדוק את ה-XP שלכם "
+        "וייתן את הרול באופן אוטומטי."
+    )
+
+    if not items:
+
+        description += (
+            "\n\n❌ כרגע אין רולים למכירה."
+        )
+
+    else:
+
+        description += "\n\n**רולים בחנות:**\n"
+
+        for role_id, price in items:
+
+            role = guild.get_role(role_id)
+
+            if role:
+
+                description += (
+                    f"🎭 {role.mention} — **{price:,} XP**\n"
+                )
+
+    embed = discord.Embed(
+        title="🛒 חנות XP",
+        description=description,
+        color=discord.Color.gold()
+    )
+
+    embed.set_footer(
+        text="Foxes • XP Shop"
+    )
+
+    return embed
+
+
+@bot.tree.command(
+    name="shop",
+    description="פתיחת חנות ה-XP"
+)
+async def shop_command(
+    interaction: discord.Interaction
+):
+
+    await interaction.response.send_message(
+        embed=create_shop_embed(interaction.guild),
+        view=ShopView(interaction.guild)
+    )
+
+
+@bot.tree.command(
+    name="shopadd",
+    description="הוספת רול לחנות"
+)
+@app_commands.describe(
+    role="הרול שיוצע בחנות",
+    price="מחיר הרול ב-XP"
+)
+async def shopadd_command(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    price: app_commands.Range[int, 1, 100000000]
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול להוסיף רולים לחנות.",
+            ephemeral=True
+        )
+
+        return
+
+    if role >= interaction.guild.me.top_role:
+
+        await interaction.response.send_message(
+            "❌ הבוט לא יכול לתת את הרול הזה. "
+            "שים את הרול של הבוט מעליו.",
+            ephemeral=True
+        )
+
+        return
+
+    add_shop_item(
+        role.id,
+        price
+    )
+
+    await interaction.response.send_message(
+        f"✅ **{role.name}** נוסף לחנות במחיר של **{price:,} XP**.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="shopremove",
+    description="הסרת רול מהחנות"
+)
+@app_commands.describe(
+    role="הרול להסרה"
+)
+async def shopremove_command(
+    interaction: discord.Interaction,
+    role: discord.Role
+):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול להסיר רולים מהחנות.",
+            ephemeral=True
+        )
+
+        return
+
+    remove_shop_item(
+        role.id
+    )
+
+    await interaction.response.send_message(
+        f"✅ **{role.name}** הוסר מהחנות.",
+        ephemeral=True
+    )
+
+
+# =========================
+# GAME SYSTEM
+# =========================
+
+active_1v1 = {}
+active_public_games = {}
+
+
+class InviteUserView(discord.ui.View):
+
+    def __init__(self, game_type, challenger):
+
+        super().__init__(
+            timeout=60
+        )
+
+        self.game_type = game_type
+        self.challenger = challenger
+
+    @discord.ui.button(
+        label="בחר חבר להזמנה",
+        emoji="👤",
+        style=discord.ButtonStyle.primary
+    )
+    async def choose_friend(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.user.id != self.challenger.id:
+
+            await interaction.response.send_message(
+                "❌ רק מי שפתח את המשחק יכול לבחור יריב.",
+                ephemeral=True
+            )
+
+            return
+
+        await interaction.response.send_message(
+            "בחר את החבר שאתה רוצה להזמין:",
+            view=FriendSelectView(
+                self.game_type,
+                self.challenger
+            ),
+            ephemeral=True
+        )
+
+
+class FriendSelect(discord.ui.UserSelect):
+
+    def __init__(self, game_type, challenger):
+
+        self.game_type = game_type
+        self.challenger = challenger
+
+        super().__init__(
+            placeholder="👤 בחר שחקן...",
+            min_values=1,
+            max_values=1
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        opponent = self.values[0]
+
+        if opponent.id == self.challenger.id:
+
+            await interaction.response.send_message(
+                "❌ אתה לא יכול להזמין את עצמך.",
+                ephemeral=True
+            )
+
+            return
+
+        if opponent.bot:
+
+            await interaction.response.send_message(
+                "❌ אי אפשר להזמין בוט.",
+                ephemeral=True
+            )
+
+            return
+
+        key = (
+            interaction.guild.id,
+            self.challenger.id
+        )
+
+        active_1v1[key] = {
+            "game": self.game_type,
+            "challenger": self.challenger.id,
+            "opponent": opponent.id
+        }
+
+        game_name = (
+            "🪙 Coin Flip"
+            if self.game_type == "coinflip"
+            else "✂️ Rock Paper Scissors"
+        )
+
+        await interaction.response.send_message(
+            f"📨 הוזמן שחקן ל־**{game_name}**!",
+            ephemeral=True
+        )
+
+        try:
+
+            await interaction.channel.send(
+                content=(
+                    f"{opponent.mention}\n\n"
+                    f"🎮 **{self.challenger.display_name}** "
+                    f"הזמין אותך ל־**{game_name}**!"
+                ),
+                view=GameInviteView(
+                    self.game_type,
+                    self.challenger,
+                    opponent
+                )
+            )
+
+        except discord.HTTPException:
+            pass
+
+
+class FriendSelectView(discord.ui.View):
+
+    def __init__(self, game_type, challenger):
+
+        super().__init__(
+            timeout=60
+        )
+
+        self.add_item(
+            FriendSelect(
+                game_type,
+                challenger
+            )
+        )
+
+
+class GameInviteView(discord.ui.View):
+
+    def __init__(
+        self,
+        game_type,
+        challenger,
+        opponent
+    ):
+
+        super().__init__(
+            timeout=60
+        )
+
+        self.game_type = game_type
+        self.challenger = challenger
+        self.opponent = opponent
+
+    @discord.ui.button(
+        label="אישור",
+        emoji="✅",
+        style=discord.ButtonStyle.success
+    )
+    async def accept(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.user.id != self.opponent.id:
+
+            await interaction.response.send_message(
+                "❌ רק השחקן שהוזמן יכול לאשר.",
+                ephemeral=True
+            )
+
+            return
+
+        await interaction.response.edit_message(
+            content="✅ המשחק אושר! המשחק מתחיל...",
+            view=None
+        )
+
+        if self.game_type == "coinflip":
+
+            await start_coinflip(
+                interaction.channel,
+                self.challenger,
+                self.opponent
+            )
+
+        else:
+
+            await start_rps(
+                interaction.channel,
+                self.challenger,
+                self.opponent
+            )
+
+    @discord.ui.button(
+        label="דחה",
+        emoji="❌",
+        style=discord.ButtonStyle.danger
+    )
+    async def decline(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.user.id != self.opponent.id:
+
+            await interaction.response.send_message(
+                "❌ רק השחקן שהוזמן יכול לדחות.",
+                ephemeral=True
+            )
+
+            return
+
+        await interaction.response.edit_message(
+            content="❌ ההזמנה נדחתה.",
+            view=None
+        )
+
+
+async def start_coinflip(
+    channel,
+    player1,
+    player2
+):
+
+    result = random.choice(
+        [player1, player2]
+    )
+
+    await channel.send(
+        f"🪙 **Coin Flip**\n\n"
+        f"{player1.mention} נגד {player2.mention}\n\n"
+        f"🏆 המנצח: **{result.display_name}**!"
+    )
+
+
+class RPSView(discord.ui.View):
+
+    def __init__(self, player1, player2):
+
+        super().__init__(
+            timeout=60
+        )
+
+        self.player1 = player1
+        self.player2 = player2
+
+        self.choices = {}
+
+    async def make_choice(
+        self,
+        interaction,
+        choice
+    ):
+
+        if interaction.user.id not in [
+            self.player1.id,
+            self.player2.id
+        ]:
+
+            await interaction.response.send_message(
+                "❌ אתה לא משתתף במשחק הזה.",
+                ephemeral=True
+            )
+
+            return
+
+        if interaction.user.id in self.choices:
+
+            await interaction.response.send_message(
+                "❌ כבר בחרת.",
+                ephemeral=True
+            )
+
+            return
+
+        self.choices[
+            interaction.user.id
+        ] = choice
+
+        await interaction.response.send_message(
+            "✅ הבחירה שלך נקלטה.",
+            ephemeral=True
+        )
+
+        if len(self.choices) == 2:
+
+            p1 = self.choices[
+                self.player1.id
+            ]
+
+            p2 = self.choices[
+                self.player2.id
+            ]
+
+            if p1 == p2:
+
+                result = "🤝 תיקו!"
+
+            elif (
+                (p1 == "rock" and p2 == "scissors")
+                or
+                (p1 == "paper" and p2 == "rock")
+                or
+                (p1 == "scissors" and p2 == "paper")
+            ):
+
+                result = (
+                    f"🏆 המנצח: {self.player1.mention}"
+                )
+
+            else:
+
+                result = (
+                    f"🏆 המנצח: {self.player2.mention}"
+                )
+
+            await interaction.channel.send(
+                f"✂️ **Rock Paper Scissors**\n\n"
+                f"{self.player1.mention} נגד {self.player2.mention}\n\n"
+                f"{result}"
+            )
+
+            self.stop()
+
+    @discord.ui.button(
+        label="אבן",
+        emoji="🪨",
+        style=discord.ButtonStyle.primary
+    )
+    async def rock(
+        self,
+        interaction,
+        button
+    ):
+
+        await self.make_choice(
+            interaction,
+            "rock"
+        )
+
+    @discord.ui.button(
+        label="נייר",
+        emoji="📄",
+        style=discord.ButtonStyle.primary
+    )
+    async def paper(
+        self,
+        interaction,
+        button
+    ):
+
+        await self.make_choice(
+            interaction,
+            "paper"
+        )
+
+    @discord.ui.button(
+        label="מספריים",
+        emoji="✂️",
+        style=discord.ButtonStyle.primary
+    )
+    async def scissors(
+        self,
+        interaction,
+        button
+    ):
+
+        await self.make_choice(
+            interaction,
+            "scissors"
+        )
+
+
+async def start_rps(
+    channel,
+    player1,
+    player2
+):
+
+    await channel.send(
+        f"✂️ **Rock Paper Scissors**\n\n"
+        f"{player1.mention} נגד {player2.mention}\n\n"
+        "בחרו את הבחירה שלכם:",
+        view=RPSView(
+            player1,
+            player2
+        )
+    )
+
+
+class PublicDiceView(discord.ui.View):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=120
+        )
+
+        self.players = set()
+
+    @discord.ui.button(
+        label="הצטרף למשחק",
+        emoji="🎮",
+        style=discord.ButtonStyle.success
+    )
+    async def join(
+        self,
+        interaction,
+        button
+    ):
+
+        if interaction.user.bot:
+
+            return
+
+        self.players.add(
+            interaction.user.id
+        )
+
+        await interaction.response.send_message(
+            f"✅ {interaction.user.mention} הצטרף למשחק!",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="הטל קובייה",
+        emoji="🎲",
+        style=discord.ButtonStyle.primary
+    )
+    async def roll(
+        self,
+        interaction,
+        button
+    ):
+
+        if interaction.user.id not in self.players:
+
+            await interaction.response.send_message(
+                "❌ קודם צריך להצטרף למשחק.",
+                ephemeral=True
+            )
+
+            return
+
+        if len(self.players) < 2:
+
+            await interaction.response.send_message(
+                "❌ צריך לפחות 2 שחקנים.",
+                ephemeral=True
+            )
+
+            return
+
+        results = []
+
+        for user_id in self.players:
+
+            member = interaction.guild.get_member(
+                user_id
+            )
+
+            if member:
+
+                results.append(
+                    (
+                        member,
+                        random.randint(1, 6)
+                    )
+                )
+
+        results.sort(
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        text = "🎲 **תוצאות הקובייה**\n\n"
+
+        for member, value in results:
+
+            text += (
+                f"{member.mention} — **{value}**\n"
+            )
+
+        if results:
+
+            highest = results[0][1]
+
+            winners = [
+                member
+                for member, value in results
+                if value == highest
+            ]
+
+            if len(winners) == 1:
+
+                text += (
+                    f"\n🏆 המנצח: {winners[0].mention}"
+                )
+
+            else:
+
+                text += (
+                    "\n🤝 תיקו בין: "
+                    + ", ".join(
+                        member.mention
+                        for member in winners
+                    )
+                )
+
+        await interaction.channel.send(
+            text
+        )
+
+        self.stop()
+
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            await interaction.message.edit(
+                view=self
+            )
+        except:
+            pass
+
+
+class GuessView(discord.ui.View):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=120
+        )
+
+        self.players = {}
+
+    @discord.ui.button(
+        label="הצטרף למשחק",
+        emoji="🔢",
+        style=discord.ButtonStyle.success
+    )
+    async def join(
+        self,
+        interaction,
+        button
+    ):
+
+        if interaction.user.id in self.players:
+
+            await interaction.response.send_message(
+                "❌ אתה כבר במשחק.",
+                ephemeral=True
+            )
+
+            return
+
+        self.players[
+            interaction.user.id
+        ] = None
+
+        await interaction.response.send_modal(
+            GuessModal(
+                self
+            )
+        )
+
+    @discord.ui.button(
+        label="סיים משחק",
+        emoji="🏁",
+        style=discord.ButtonStyle.danger
+    )
+    async def finish(
+        self,
+        interaction,
+        button
+    ):
+
+        if interaction.user.id not in self.players:
+
+            await interaction.response.send_message(
+                "❌ קודם צריך להצטרף.",
+                ephemeral=True
+            )
+
+            return
+
+        valid = [
+            (user_id, guess)
+            for user_id, guess in self.players.items()
+            if guess is not None
+        ]
+
+        if not valid:
+
+            await interaction.response.send_message(
+                "❌ עדיין אין ניחושים.",
+                ephemeral=True
+            )
+
+            return
+
+        number = self.target_number
+
+        closest_distance = min(
+            abs(guess - number)
+            for _, guess in valid
+        )
+
+        winners = [
+            user_id
+            for user_id, guess in valid
+            if abs(guess - number) == closest_distance
+        ]
+
+        mentions = []
+
+        for user_id in winners:
+
+            member = interaction.guild.get_member(
+                user_id
+            )
+
+            if member:
+                mentions.append(
+                    member.mention
+                )
+
+        await interaction.channel.send(
+            f"🔢 **Guess**\n\n"
+            f"🎯 המספר היה **{number}**\n"
+            f"🏆 המנצח: {', '.join(mentions)}"
+        )
+
+        self.stop()
+
+    def set_number(self):
+
+        self.target_number = random.randint(
+            1,
+            100
+        )
+
+
+class GuessModal(discord.ui.Modal):
+
+    def __init__(self, game):
+
+        super().__init__(
+            title="🔢 ניחוש מספר"
+        )
+
+        self.game = game
+
+        self.answer = discord.ui.TextInput(
+            label="בחר מספר בין 1 ל-100",
+            placeholder="לדוגמה: 57",
+            required=True,
+            min_length=1,
+            max_length=3
+        )
+
+        self.add_item(
+            self.answer
+        )
+
+    async def on_submit(
+        self,
+        interaction
+    ):
+
+        try:
+
+            number = int(
+                self.answer.value
+            )
+
+            if number < 1 or number > 100:
+
+                raise ValueError
+
+        except:
+
+            await interaction.response.send_message(
+                "❌ צריך להכניס מספר בין 1 ל-100.",
+                ephemeral=True
+            )
+
+            return
+
+        self.game.players[
+            interaction.user.id
+        ] = number
+
+        await interaction.response.send_message(
+            f"✅ הניחוש שלך (**{number}**) נקלט.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="game",
+    description="פתיחת פאנל המשחקים"
+)
+async def game_command(
+    interaction: discord.Interaction
+):
+
+    embed = discord.Embed(
+        title="🎮 Foxes Games",
+        description=(
+            "בחרו משחק מהכפתורים למטה.\n\n"
+            "🪙 **Coin Flip** — משחק 1 נגד 1.\n"
+            "✂️ **Rock Paper Scissors** — משחק 1 נגד 1.\n"
+            "🎲 **Dice** — משחק פתוח לכולם.\n"
+            "🔢 **Guess** — משחק פתוח לכולם."
+        ),
+        color=discord.Color.blurple()
+    )
+
+    embed.set_footer(
+        text="Foxes • Games"
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=GamePanelView()
+    )
+
+
+class GamePanelView(discord.ui.View):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=None
+        )
+
+    @discord.ui.button(
+        label="Coin Flip",
+        emoji="🪙",
+        style=discord.ButtonStyle.primary,
+        custom_id="game_coinflip"
+    )
+    async def coinflip(
+        self,
+        interaction,
+        button
+    ):
+
+        await interaction.response.send_message(
+            "🪙 **Coin Flip — 1 נגד 1**\n\n"
+            "לחץ על הכפתור כדי לבחור חבר להזמנה.",
+            view=InviteUserView(
+                "coinflip",
+                interaction.user
+            ),
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Rock Paper Scissors",
+        emoji="✂️",
+        style=discord.ButtonStyle.primary,
+        custom_id="game_rps"
+    )
+    async def rps(
+        self,
+        interaction,
+        button
+    ):
+
+        await interaction.response.send_message(
+            "✂️ **Rock Paper Scissors — 1 נגד 1**\n\n"
+            "לחץ על הכפתור כדי לבחור חבר להזמנה.",
+            view=InviteUserView(
+                "rps",
+                interaction.user
+            ),
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Dice",
+        emoji="🎲",
+        style=discord.ButtonStyle.success,
+        custom_id="game_dice"
+    )
+    async def dice(
+        self,
+        interaction,
+        button
+    ):
+
+        game = PublicDiceView()
+
+        game.players.add(
+            interaction.user.id
+        )
+
+        await interaction.response.send_message(
+            "🎲 **Dice — משחק פתוח**\n\n"
+            f"{interaction.user.mention} פתח את המשחק!\n\n"
+            "לחצו **הצטרף למשחק** כדי להשתתף.\n"
+            "כאשר יש לפחות 2 שחקנים, אחד מהם יכול להטיל את הקובייה.",
+            view=game
+        )
+
+    @discord.ui.button(
+        label="Guess",
+        emoji="🔢",
+        style=discord.ButtonStyle.success,
+        custom_id="game_guess"
+    )
+    async def guess(
+        self,
+        interaction,
+        button
+    ):
+
+        game = GuessView()
+
+        game.set_number()
+
+        game.players[
+            interaction.user.id
+        ] = None
+
+        await interaction.response.send_message(
+            "🔢 **Guess — משחק פתוח**\n\n"
+            "לחצו **הצטרף למשחק** והכניסו ניחוש בין 1 ל־100.\n"
+            "בסיום המשחק הבוט בוחר את הניחוש הקרוב ביותר.",
+            view=game
+        )
+
+
+# =========================
+# TICKETS
 # =========================
 
 class TicketView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="פתיחת טיקט",
@@ -461,8 +1641,8 @@ class TicketView(discord.ui.View):
     )
     async def open_ticket(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+        interaction,
+        button
     ):
 
         await interaction.response.send_message(
@@ -475,14 +1655,17 @@ class TicketView(discord.ui.View):
 class TicketTypeView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=60)
+
+        super().__init__(
+            timeout=60
+        )
 
     @discord.ui.select(
         placeholder="בחר סוג פנייה...",
         options=[
             discord.SelectOption(
                 label="באג",
-                description="דיווח על תקלה או באג",
+                description="דיווח על תקלה",
                 emoji="🐛",
                 value="bug"
             ),
@@ -502,8 +1685,8 @@ class TicketTypeView(discord.ui.View):
     )
     async def ticket_type(
         self,
-        interaction: discord.Interaction,
-        select: discord.ui.Select
+        interaction,
+        select
     ):
 
         guild = interaction.guild
@@ -594,10 +1777,6 @@ class TicketTypeView(discord.ui.View):
             color=discord.Color.blue()
         )
 
-        embed.set_footer(
-            text="מערכת הטיקטים"
-        )
-
         await channel.send(
             embed=embed,
             view=TicketControlView()
@@ -612,7 +1791,10 @@ class TicketTypeView(discord.ui.View):
 class TicketControlView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="לקחת טיפול",
@@ -622,8 +1804,8 @@ class TicketControlView(discord.ui.View):
     )
     async def claim_ticket(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+        interaction,
+        button
     ):
 
         if not is_staff(interaction.user):
@@ -653,8 +1835,8 @@ class TicketControlView(discord.ui.View):
     )
     async def close_ticket(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+        interaction,
+        button
     ):
 
         if not is_staff(interaction.user):
@@ -679,25 +1861,21 @@ class TicketControlView(discord.ui.View):
 
 
 # =========================
-# SLASH COMMANDS
+# COMMANDS
 # =========================
 
 @bot.tree.command(
     name="xp",
     description="בדיקת כמות ה-XP שלך"
 )
-async def xp_command(interaction: discord.Interaction):
+async def xp_command(interaction):
 
-    xp = get_xp(interaction.user.id)
-
-    embed = discord.Embed(
-        title="📊 ה-XP שלך",
-        description=f"יש לך כרגע **{xp} XP**.",
-        color=discord.Color.blue()
+    xp = get_xp(
+        interaction.user.id
     )
 
     await interaction.response.send_message(
-        embed=embed,
+        f"📊 יש לך **{xp:,} XP**.",
         ephemeral=True
     )
 
@@ -706,18 +1884,14 @@ async def xp_command(interaction: discord.Interaction):
     name="warnings",
     description="בדיקת מספר האזהרות שלך"
 )
-async def warnings_command(interaction: discord.Interaction):
+async def warnings_command(interaction):
 
-    warnings = get_warnings(interaction.user.id)
-
-    embed = discord.Embed(
-        title="⚠️ האזהרות שלך",
-        description=f"יש לך כרגע **{warnings} אזהרות**.",
-        color=discord.Color.orange()
+    warnings = get_warnings(
+        interaction.user.id
     )
 
     await interaction.response.send_message(
-        embed=embed,
+        f"⚠️ יש לך **{warnings} אזהרות**.",
         ephemeral=True
     )
 
@@ -727,11 +1901,11 @@ async def warnings_command(interaction: discord.Interaction):
     description="מתן אזהרה למשתמש"
 )
 @app_commands.describe(
-    member="המשתמש שיקבל את האזהרה",
+    member="המשתמש",
     reason="סיבת האזהרה"
 )
 async def warn_command(
-    interaction: discord.Interaction,
+    interaction,
     member: discord.Member,
     reason: str
 ):
@@ -739,53 +1913,27 @@ async def warn_command(
     if not is_staff(interaction.user):
 
         await interaction.response.send_message(
-            "❌ אין לך הרשאה להשתמש בפקודה הזאת.",
+            "❌ אין לך הרשאה.",
             ephemeral=True
         )
 
         return
 
-    warnings = add_warning(member.id)
-
-    embed = discord.Embed(
-        title="⚠️ אזהרה ניתנה",
-        color=discord.Color.red()
-    )
-
-    embed.add_field(
-        name="משתמש",
-        value=member.mention,
-        inline=False
-    )
-
-    embed.add_field(
-        name="סיבה",
-        value=reason,
-        inline=False
-    )
-
-    embed.add_field(
-        name="מספר אזהרות",
-        value=str(warnings),
-        inline=False
+    warnings = add_warning(
+        member.id
     )
 
     await interaction.response.send_message(
-        embed=embed,
-        ephemeral=True
+        f"⚠️ {member.mention} קיבל אזהרה.\n"
+        f"סיבה: **{reason}**\n"
+        f"סה״כ אזהרות: **{warnings}**"
     )
 
     try:
 
         await member.send(
-            f"""⚠️ **קיבלת אזהרה**
-
-שרת: **{interaction.guild.name}**
-
-סיבה:
-{reason}
-
-מספר האזהרות שלך: **{warnings}**"""
+            f"⚠️ קיבלת אזהרה ב־**{interaction.guild.name}**.\n"
+            f"סיבה: {reason}"
         )
 
     except:
@@ -794,57 +1942,9 @@ async def warn_command(
 
 @bot.tree.command(
     name="ticket",
-    description="שליחת פאנל פתיחת טיקט"
+    description="שליחת פאנל טיקטים"
 )
-async def ticket_command(
-    interaction: discord.Interaction
-):
-
-    if not is_staff(interaction.user):
-
-        await interaction.response.send_message(
-            "❌ רק צוות יכול לשלוח את פאנל הטיקטים.",
-            ephemeral=True
-        )
-
-        return
-
-    embed = discord.Embed(
-        title="🎫 מערכת הטיקטים",
-        description=(
-            "ברוכים הבאים למערכת התמיכה.\n\n"
-            "לחצו על **פתיחת טיקט** ובחרו את סוג הפנייה.\n\n"
-            "🐛 **באג**\n"
-            "דיווח על תקלה.\n\n"
-            "👮 **התקבלות לצוות**\n"
-            "בקשה להצטרף לצוות.\n\n"
-            "🚨 **דיווח על משתמש**\n"
-            "דיווח על הפרת חוקי השרת."
-        ),
-        color=discord.Color.blue()
-    )
-
-    embed.set_footer(
-        text="מערכת הטיקטים • Foxy bot"
-    )
-
-    await interaction.response.send_message(
-        embed=embed,
-        view=TicketView()
-    )
-
-
-# =========================
-# WELCOME PANEL COMMAND
-# =========================
-
-@bot.tree.command(
-    name="welcome",
-    description="שליחת פאנל הרולים של השרת"
-)
-async def welcome_command(
-    interaction: discord.Interaction
-):
+async def ticket_command(interaction):
 
     if not is_staff(interaction.user):
 
@@ -855,8 +1955,39 @@ async def welcome_command(
 
         return
 
+    embed = discord.Embed(
+        title="🎫 מערכת הטיקטים",
+        description=(
+            "לחצו על **פתיחת טיקט** ובחרו סוג פנייה."
+        ),
+        color=discord.Color.blue()
+    )
+
     await interaction.response.send_message(
-        embed=create_role_panel_embed(interaction.guild),
+        embed=embed,
+        view=TicketView()
+    )
+
+
+@bot.tree.command(
+    name="welcome",
+    description="שליחת פאנל הרולים"
+)
+async def welcome_command(interaction):
+
+    if not is_staff(interaction.user):
+
+        await interaction.response.send_message(
+            "❌ רק צוות יכול להשתמש בזה.",
+            ephemeral=True
+        )
+
+        return
+
+    await interaction.response.send_message(
+        embed=create_role_panel_embed(
+            interaction.guild
+        ),
         view=RoleSelectionView()
     )
 
@@ -899,16 +2030,15 @@ async def on_message(message):
         except:
             pass
 
-        warnings = add_warning(user_id)
+        warnings = add_warning(
+            user_id
+        )
 
         try:
 
             await message.author.send(
-                f"""⚠️ **אזהרה**
-
-הודעה שלך נמחקה מכיוון שהיא הכילה קישור.
-
-מספר האזהרות שלך: **{warnings}**"""
+                f"⚠️ ההודעה שלך נמחקה בגלל קישור.\n"
+                f"מספר אזהרות: **{warnings}**"
             )
 
         except:
@@ -916,7 +2046,80 @@ async def on_message(message):
 
         return
 
-    await bot.process_commands(message)
+    await bot.process_commands(
+        message
+    )
+
+
+# =========================
+# HELP
+# =========================
+
+@bot.tree.command(
+    name="help",
+    description="הצגת כל פקודות הבוט"
+)
+async def help_command(interaction):
+
+    embed = discord.Embed(
+        title="🦊 Foxes Bot — פקודות",
+        description="כל הפקודות הזמינות בבוט:",
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(
+        name="🎮 משחקים",
+        value=(
+            "`/game` — פאנל כל המשחקים\n"
+            "🪙 Coin Flip — 1v1\n"
+            "✂️ RPS — 1v1\n"
+            "🎲 Dice — פתוח לכולם\n"
+            "🔢 Guess — פתוח לכולם"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛒 חנות",
+        value=(
+            "`/shop` — פתיחת חנות XP\n"
+            "`/shopadd` — הוספת רול לחנות [צוות]\n"
+            "`/shopremove` — הסרת רול [צוות]"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 XP",
+        value=(
+            "`/xp` — בדיקת XP\n"
+            "XP מתקבל אוטומטית מהודעות"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎫 טיקטים",
+        value=(
+            "`/ticket` — פאנל טיקטים\n"
+            "`/welcome` — פאנל רולים"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛡️ ניהול",
+        value=(
+            "`/warn` — אזהרה\n"
+            "`/warnings` — בדיקת אזהרות"
+        ),
+        inline=False
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
 
 
 # =========================
@@ -926,17 +2129,26 @@ async def on_message(message):
 @bot.event
 async def setup_hook():
 
-    # Persistent views
-    bot.add_view(TicketView())
-    bot.add_view(TicketControlView())
-    bot.add_view(RoleSelectionView())
+    bot.add_view(
+        TicketView()
+    )
 
-    # ניקוי פקודות ישנות מהשרת
+    bot.add_view(
+        TicketControlView()
+    )
+
+    bot.add_view(
+        RoleSelectionView()
+    )
+
+    bot.add_view(
+        GamePanelView()
+    )
+
     bot.tree.clear_commands(
         guild=GUILD
     )
 
-    # הוספת הפקודות הנוכחיות
     bot.tree.copy_global_to(
         guild=GUILD
     )
@@ -965,7 +2177,7 @@ async def on_ready():
 
     print("--------------------------------")
     print(
-        f"הבוט מחובר בתור {bot.user}"
+        f"🦊 Foxes מחובר בתור {bot.user}"
     )
     print(
         f"שרת יעד: {GUILD_ID}"
