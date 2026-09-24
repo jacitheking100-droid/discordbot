@@ -26,7 +26,7 @@ BOOST_CHANNEL_NAME = "boost"
 
 # Suggestions
 SUGGESTION_PANEL_CHANNEL_NAME = "הצעות"
-SUGGESTIONS_CHANNEL_NAME = "הצעות-שהוצעו"
+SUGGESTIONS_CHANNEL_NAME = "📋・הצעות-שהוצעו"
 
 # Staff roles
 STAFF_ROLES = {
