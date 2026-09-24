@@ -77,6 +77,17 @@ CREATE TABLE IF NOT EXISTS daily_claims (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS warning_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    warning_number INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at REAL NOT NULL
+)
+""")
+
 db.commit()
 
 # =========================
@@ -2522,16 +2533,28 @@ async def suggestion_command(interaction, suggestion: str):
 
 @bot.tree.command(
     name="warnings",
-    description="בדיקת מספר האזהרות שלך"
+    description="בדיקת מספר האזהרות והפירוט"
 )
 async def warnings_command(interaction):
 
-    warnings = get_warnings(
-        interaction.user.id
+    warnings = get_warnings(interaction.user.id)
+
+    cursor.execute(
+        "SELECT warning_number, reason, source FROM warning_history WHERE user_id = ? ORDER BY warning_number DESC LIMIT 10",
+        (interaction.user.id,)
     )
+    history = cursor.fetchall()
+
+    if history:
+        details = "\n".join(
+            f"⚠️ **#{num}** — {reason} ({source})"
+            for num, reason, source in reversed(history)
+        )
+    else:
+        details = "אין אזהרות."
 
     await interaction.response.send_message(
-        f"⚠️ יש לך **{warnings} אזהרות**.",
+        f"📊 **סה״כ אזהרות: {warnings}**\n\n{details}",
         ephemeral=True
     )
 
@@ -2551,31 +2574,40 @@ async def warn_command(
 ):
 
     if not is_staff(interaction.user):
-
-        await interaction.response.send_message(
-            "❌ אין לך הרשאה.",
-            ephemeral=True
-        )
-
+        await interaction.response.send_message("❌ אין לך הרשאה.", ephemeral=True)
         return
 
-    warnings = add_warning(
-        member.id
-    )
+    if member.bot:
+        await interaction.response.send_message("❌ אי אפשר לתת אזהרה לבוט.", ephemeral=True)
+        return
+
+    if member == interaction.user:
+        await interaction.response.send_message("❌ אי אפשר לתת אזהרה לעצמך.", ephemeral=True)
+        return
+
+    if interaction.guild.me and member.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message(
+            "❌ אני לא יכול להעניש את המשתמש הזה כי הרול שלו שווה או גבוה מהרול שלי.",
+            ephemeral=True
+        )
+        return
+
+    warnings, action_text = await apply_warning(member, reason, "/warn")
 
     await interaction.response.send_message(
         f"⚠️ {member.mention} קיבל אזהרה.\n"
-        f"סיבה: **{reason}**\n"
-        f"סה״כ אזהרות: **{warnings}**"
+        f"📌 סיבה: **{reason}**\n"
+        f"📊 סה״כ אזהרות: **{warnings}**\n"
+        f"⚖️ פעולה: **{action_text}**"
     )
 
     try:
-
         await member.send(
             f"⚠️ קיבלת אזהרה ב־**{interaction.guild.name}**.\n"
-            f"סיבה: {reason}"
+            f"📌 סיבה: {reason}\n"
+            f"📊 סה״כ אזהרות: **{warnings}**\n"
+            f"⚖️ פעולה: {action_text}"
         )
-
     except:
         pass
 
@@ -2695,17 +2727,21 @@ async def on_message(message):
         except:
             pass
 
-        warnings = add_warning(
-            user_id
+        reason = "שליחת קישור אסור"
+
+        warnings, action_text = await apply_warning(
+            message.author,
+            reason,
+            "Anti-Link"
         )
 
         try:
-
             await message.author.send(
                 f"⚠️ ההודעה שלך נמחקה בגלל קישור.\n"
-                f"מספר אזהרות: **{warnings}**"
+                f"📌 סיבה: **{reason}**\n"
+                f"📊 סה״כ אזהרות: **{warnings}**\n"
+                f"⚖️ פעולה: **{action_text}**"
             )
-
         except:
             pass
 
