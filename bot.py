@@ -2531,6 +2531,54 @@ async def suggestion_command(interaction, suggestion: str):
     )
 
 
+async def apply_warning(member, reason, source):
+
+    warnings = add_warning(member.id)
+
+    cursor.execute(
+        "INSERT INTO warning_history (user_id, warning_number, reason, source, created_at) VALUES (?, ?, ?, ?, ?)",
+        (member.id, warnings, reason, source, time.time())
+    )
+    db.commit()
+
+    action_text = "⚠️ אין עונש נוסף"
+
+    try:
+        if warnings == 2:
+            await member.timeout(
+                timedelta(minutes=30),
+                reason=f"Warn #{warnings}: {reason}"
+            )
+            action_text = "🔇 מיוט / Timeout ל־30 דקות"
+
+        elif warnings == 3:
+            await member.timeout(
+                timedelta(hours=3),
+                reason=f"Warn #{warnings}: {reason}"
+            )
+            action_text = "🔇 מיוט / Timeout ל־3 שעות"
+
+        elif warnings == 4:
+            await member.timeout(
+                timedelta(days=1),
+                reason=f"Warn #{warnings}: {reason}"
+            )
+            action_text = "⏱️ Timeout ל־24 שעות"
+
+        elif warnings >= 5:
+            await member.ban(
+                reason=f"Warn #{warnings}: {reason}"
+            )
+            action_text = "🔨 באן"
+
+    except discord.Forbidden:
+        action_text = "❌ האזהרה נרשמה, אבל לבוט אין הרשאה לבצע את העונש."
+    except discord.HTTPException as e:
+        action_text = f"❌ האזהרה נרשמה, אבל Discord דחה את העונש (קוד {e.status})."
+
+    return warnings, action_text
+
+
 @bot.tree.command(
     name="warnings",
     description="בדיקת מספר האזהרות והפירוט"
